@@ -4,6 +4,55 @@
     import PageViewer from '$lib/components/PageViewer.svelte';
     import NotesPanel from '$lib/components/NotesPanel.svelte';
     import { centerViewer, rightViewer, notesOpen } from '$lib/stores.js';
+
+    // Fraction of the viewer area given to the center panel (rest goes to right).
+    let centerFraction = $state(0.5);
+    let viewersEl = $state<HTMLDivElement>();
+    let dragging = $state(false);
+
+    const MIN = 0.15;
+    const MAX = 0.85;
+    const STEP = 0.02;
+
+    function fractionFromX(clientX: number): number {
+        if (!viewersEl) return centerFraction;
+        const rect = viewersEl.getBoundingClientRect();
+        const f = (clientX - rect.left) / rect.width;
+        return Math.max(MIN, Math.min(MAX, f));
+    }
+
+    function onDividerPointerDown(e: PointerEvent) {
+        dragging = true;
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        e.preventDefault();
+    }
+
+    function onDividerPointerMove(e: PointerEvent) {
+        if (!dragging) return;
+        centerFraction = fractionFromX(e.clientX);
+    }
+
+    function onDividerPointerUp(e: PointerEvent) {
+        dragging = false;
+        try {
+            (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch {
+            // pointer already released
+        }
+    }
+
+    function onDividerKey(e: KeyboardEvent) {
+        if (e.key === 'ArrowLeft') {
+            centerFraction = Math.max(MIN, centerFraction - STEP);
+            e.preventDefault();
+        } else if (e.key === 'ArrowRight') {
+            centerFraction = Math.min(MAX, centerFraction + STEP);
+            e.preventDefault();
+        } else if (e.key === 'Home') {
+            centerFraction = 0.5;
+            e.preventDefault();
+        }
+    }
 </script>
 
 <div class="app-shell">
@@ -12,10 +61,35 @@
     <div class="main-area">
         <ThumbnailStrip />
 
-        <div class="viewers">
-            <PageViewer viewerStore={centerViewer} role="center" />
-            <div class="viewer-divider"></div>
-            <PageViewer viewerStore={rightViewer} role="right" />
+        <div class="viewers" class:dragging bind:this={viewersEl}>
+            <div class="viewer-pane" style="flex-grow: {centerFraction}">
+                <PageViewer viewerStore={centerViewer} role="center" />
+            </div>
+
+            <!-- A focusable, keyboard-operable separator is the ARIA window-splitter pattern -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+                class="viewer-divider"
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuenow={Math.round(centerFraction * 100)}
+                aria-valuemin={Math.round(MIN * 100)}
+                aria-valuemax={Math.round(MAX * 100)}
+                tabindex="0"
+                title="Drag to resize the viewers (double-click to reset)"
+                onpointerdown={onDividerPointerDown}
+                onpointermove={onDividerPointerMove}
+                onpointerup={onDividerPointerUp}
+                ondblclick={() => (centerFraction = 0.5)}
+                onkeydown={onDividerKey}
+            >
+                <div class="divider-grip"></div>
+            </div>
+
+            <div class="viewer-pane" style="flex-grow: {1 - centerFraction}">
+                <PageViewer viewerStore={rightViewer} role="right" />
+            </div>
         </div>
 
         {#if $notesOpen}
@@ -76,9 +150,57 @@
     overflow: hidden;
 }
 
+.viewer-pane {
+    flex-basis: 0;
+    min-width: 0;     /* allow shrinking below page width */
+    height: 100%;
+    overflow: hidden;
+}
+
 .viewer-divider {
-    width: 3px;
-    background: var(--border);
+    width: 6px;
     flex-shrink: 0;
+    background: var(--border);
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s;
+    touch-action: none;
+}
+
+.viewer-divider:hover,
+.viewers.dragging .viewer-divider {
+    background: var(--accent);
+}
+
+.viewer-divider:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.divider-grip {
+    width: 2px;
+    height: 28px;
+    border-radius: 2px;
+    background: var(--text-muted);
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.viewer-divider:hover .divider-grip,
+.viewers.dragging .divider-grip {
+    background: #fff;
+    opacity: 0.9;
+}
+
+/* While dragging, suppress text selection and pointer interactions in the panes */
+.viewers.dragging {
+    user-select: none;
+    cursor: col-resize;
+}
+
+.viewers.dragging .viewer-pane {
+    pointer-events: none;
 }
 </style>

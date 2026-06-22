@@ -10,10 +10,15 @@ export interface DocumentState {
     page_sizes: PageSize[];
 }
 
+export type ZoomMode = 'fit' | 'manual';
+
 export interface ViewerState {
     /** 0-based page index currently targeted by thumbnail/note clicks */
     targetPage: number;
-    zoom: number;
+    /** 'fit' = auto-scale pages to pane width; 'manual' = use manualZoom */
+    mode: ZoomMode;
+    /** Zoom factor applied only in 'manual' mode (1.0 = 100%) */
+    manualZoom: number;
 }
 
 export interface HighlightRect {

@@ -13,23 +13,74 @@
     let { viewerStore, role }: Props = $props();
 
     const BASE_DPI = 96;
+    const FIT_MARGIN = 24; // px breathing room around the page in fit mode
+    const MIN_ZOOM = 0.1;
+    const MAX_ZOOM = 6.0;
 
-    let container: HTMLElement;
+    let container = $state<HTMLElement>();
     let visiblePages = $state(new Set<number>());
     let pageElements: HTMLElement[] = [];
 
-    let zoom = $state(1.0);
+    // Mirrors of the viewer store
+    let mode = $state<'fit' | 'manual'>('fit');
+    let manualZoom = $state(1.0);
     let targetPage = $state(0);
+
+    // Available content width of the scroll area (tracked via ResizeObserver).
+    let containerWidth = $state(0);
 
     $effect(() => {
         // Use effect so the subscription re-binds if viewerStore prop changes
         return viewerStore.subscribe(v => {
-            zoom = v.zoom;
+            mode = v.mode;
+            manualZoom = v.manualZoom;
             if (v.targetPage !== targetPage) {
                 targetPage = v.targetPage;
                 scrollToPage(targetPage);
             }
         });
+    });
+
+    // Track the pane's content width so fit-width re-fits on divider/window resize.
+    $effect(() => {
+        const el = container;
+        if (!el) return;
+        const ro = new ResizeObserver((entries) => {
+            for (const e of entries) containerWidth = e.contentRect.width;
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    });
+
+    // Widest page drives the fit scale so no page overflows horizontally.
+    const maxPageWidthPts = $derived(
+        $docStore && $docStore.page_sizes.length
+            ? Math.max(...$docStore.page_sizes.map((s) => s.width_pts))
+            : 612
+    );
+
+    // Zoom that makes the widest page fill the available width.
+    const fitZoom = $derived.by(() => {
+        if (!$docStore || containerWidth <= 0) return 1.0;
+        const pageWpx = (maxPageWidthPts / 72) * BASE_DPI;
+        const z = (containerWidth - FIT_MARGIN) / pageWpx;
+        return Math.max(MIN_ZOOM, Math.min(z, MAX_ZOOM));
+    });
+
+    // The zoom actually used for layout/overlays (display size).
+    const effectiveZoom = $derived(mode === 'fit' ? fitZoom : manualZoom);
+
+    // The zoom used for the rendered bitmap resolution. Debounced in fit mode so
+    // dragging the divider rescales via CSS smoothly and re-renders crisp on settle.
+    let renderZoom = $state(1.0);
+    $effect(() => {
+        const z = effectiveZoom;
+        if (mode === 'manual') {
+            renderZoom = z; // discrete button clicks: update immediately
+            return;
+        }
+        const t = setTimeout(() => { renderZoom = z; }, 100);
+        return () => clearTimeout(t);
     });
 
     // Render at devicePixelRatio so text is crisp on HiDPI screens (Windows
@@ -74,16 +125,20 @@
         }
     });
 
+    // Explicit zoom actions switch the viewer into manual mode, continuing from
+    // whatever zoom is currently displayed (the fit zoom, if we were fitting).
     function zoomIn() {
-        viewerStore.update(v => ({ ...v, zoom: Math.min(v.zoom + 0.25, 4.0) }));
+        const z = Math.min(effectiveZoom + 0.25, 4.0);
+        viewerStore.update(v => ({ ...v, mode: 'manual', manualZoom: z }));
     }
 
     function zoomOut() {
-        viewerStore.update(v => ({ ...v, zoom: Math.max(v.zoom - 0.25, 0.25) }));
+        const z = Math.max(effectiveZoom - 0.25, 0.25);
+        viewerStore.update(v => ({ ...v, mode: 'manual', manualZoom: z }));
     }
 
-    function zoomReset() {
-        viewerStore.update(v => ({ ...v, zoom: 1.0 }));
+    function fitWidth() {
+        viewerStore.update(v => ({ ...v, mode: 'fit' }));
     }
 
     // Filter highlights for a specific page
@@ -96,8 +151,9 @@
     <!-- Zoom controls -->
     <div class="zoom-bar">
         <button onclick={zoomOut} title="Zoom out">−</button>
-        <button onclick={zoomReset} title="Reset zoom">{Math.round(zoom * 100)}%</button>
+        <button class="zoom-pct" onclick={fitWidth} title="Fit width">{Math.round(effectiveZoom * 100)}%</button>
         <button onclick={zoomIn} title="Zoom in">+</button>
+        <button class="fit-btn" class:active={mode === 'fit'} onclick={fitWidth} title="Fit page width">Fit</button>
     </div>
 
     <!-- Scrollable page area -->
@@ -105,8 +161,8 @@
     <div class="page-scroll" bind:this={container}>
         {#if $docStore}
             {#each $docStore.page_sizes as size, i}
-                {@const pw = ptsToPx(size.width_pts, zoom)}
-                {@const ph = ptsToPx(size.height_pts, zoom)}
+                {@const pw = ptsToPx(size.width_pts, effectiveZoom)}
+                {@const ph = ptsToPx(size.height_pts, effectiveZoom)}
                 <div
                     class="page-slot"
                     data-page-idx={i}
@@ -114,9 +170,9 @@
                     bind:this={pageElements[i]}
                 >
                     {#if visiblePages.has(i)}
-                        <!-- Raster bitmap from PDFium -->
+                        <!-- Raster bitmap from PDFium (resolution = renderZoom × DPR) -->
                         <img
-                            src={renderUrl($docStore.doc_id, i, scalePct(zoom))}
+                            src={renderUrl($docStore.doc_id, i, scalePct(renderZoom))}
                             alt="Page {i + 1}"
                             width={pw}
                             height={ph}
@@ -126,7 +182,7 @@
                         <HighlightLayer
                             pageHighlights={pageHighlights(i)}
                             {size}
-                            {zoom}
+                            zoom={effectiveZoom}
                             pageIndex={i}
                         />
                         <!-- Text selection overlay (only if doc has text layer) -->
@@ -135,7 +191,7 @@
                                 docId={$docStore.doc_id}
                                 pageIndex={i}
                                 {size}
-                                {zoom}
+                                zoom={effectiveZoom}
                             />
                         {/if}
                     {/if}
@@ -160,6 +216,7 @@
 .viewer-root {
     display: flex;
     flex-direction: column;
+    width: 100%;
     height: 100%;
     overflow: hidden;
     background: var(--bg-canvas);
@@ -188,6 +245,20 @@
 }
 
 .zoom-bar button:hover { background: var(--bg-hover); }
+
+.zoom-pct {
+    min-width: 52px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.fit-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}
+
+.fit-btn.active:hover { background: var(--accent-hover); }
 
 .page-scroll {
     flex: 1;
