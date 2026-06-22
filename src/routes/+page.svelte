@@ -67,32 +67,33 @@
                 <PageViewer viewerStore={mainViewer} label="Main" />
             </div>
 
-            {#if $sideOpen}
-                <!-- A focusable, keyboard-operable separator is the ARIA window-splitter pattern -->
-                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                <div
-                    class="viewer-divider"
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-valuenow={Math.round(centerFraction * 100)}
-                    aria-valuemin={Math.round(MIN * 100)}
-                    aria-valuemax={Math.round(MAX * 100)}
-                    tabindex="0"
-                    title="Drag to resize the viewers (double-click to reset)"
-                    onpointerdown={onDividerPointerDown}
-                    onpointermove={onDividerPointerMove}
-                    onpointerup={onDividerPointerUp}
-                    ondblclick={() => (centerFraction = 0.5)}
-                    onkeydown={onDividerKey}
-                >
-                    <div class="divider-grip"></div>
-                </div>
+            <!-- Keep divider + side pane always mounted so the side viewer's scroll
+                 position survives hide/show. CSS display:none hides them without
+                 destroying the component or losing DOM scroll state. -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+                class="viewer-divider"
+                class:hidden={!$sideOpen}
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuenow={Math.round(centerFraction * 100)}
+                aria-valuemin={Math.round(MIN * 100)}
+                aria-valuemax={Math.round(MAX * 100)}
+                tabindex="0"
+                title="Drag to resize the viewers (double-click to reset)"
+                onpointerdown={onDividerPointerDown}
+                onpointermove={onDividerPointerMove}
+                onpointerup={onDividerPointerUp}
+                ondblclick={() => (centerFraction = 0.5)}
+                onkeydown={onDividerKey}
+            >
+                <div class="divider-grip"></div>
+            </div>
 
-                <div class="viewer-pane" style="flex-grow: {1 - centerFraction}">
-                    <PageViewer viewerStore={sideViewer} label="Side" />
-                </div>
-            {/if}
+            <div class="viewer-pane" class:hidden={!$sideOpen} style="flex-grow: {1 - centerFraction}">
+                <PageViewer viewerStore={sideViewer} label="Side" />
+            </div>
         </div>
     </div>
 </div>
@@ -155,6 +156,8 @@
     height: 100%;
     overflow: hidden;
 }
+
+.hidden { display: none; }
 
 .viewer-divider {
     width: 6px;

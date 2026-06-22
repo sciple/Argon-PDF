@@ -1,7 +1,9 @@
 <script lang="ts">
     import { untrack } from 'svelte';
+    import { TextLayer } from 'pdfjs-dist';
     import { pdfDoc } from '../stores.js';
-    import { getPage, renderPageToCanvas } from '../pdf.js';
+    import { getPage, renderPageToCanvas, searchAllPages } from '../pdf.js';
+    import type { TextMatch } from '../pdf.js';
     import Icon from './Icon.svelte';
     import type { ViewerState } from '../types.js';
     import type { Writable } from 'svelte/store';
@@ -22,8 +24,24 @@
     let visiblePages = $state(new Set<number>());
     let pageEls: HTMLElement[] = [];
     let canvasEls: HTMLCanvasElement[] = [];
-    // page index -> scale it was last rendered at (avoid redundant re-renders)
+    let textLayerEls: (HTMLElement | undefined)[] = [];
     let renderedAt = new Map<number, number>();
+
+    // Per-rendered-page text data used for search highlighting.
+    interface PageLayer {
+        divs: HTMLElement[];
+        itemsStr: string[];
+        offsets: number[];
+        fullText: string;
+    }
+    let textLayersByPage = new Map<number, PageLayer>();
+
+    // Search
+    let searchQuery = $state('');
+    let searchMatches = $state<TextMatch[]>([]);
+    let searchMatchIdx = $state(-1);
+    let searching = $state(false);
+    let searchDebounce: ReturnType<typeof setTimeout> | null = null;
 
     // Mirrored store state
     let mode = $state<'fit' | 'manual'>('fit');
@@ -32,6 +50,15 @@
 
     let containerWidth = $state(0);
     let scrollTop = $state(0);
+
+    // Reset text layers and search whenever the open document changes.
+    $effect(() => {
+        $pdfDoc;
+        textLayersByPage = new Map();
+        searchMatches = [];
+        searchMatchIdx = -1;
+        searching = false;
+    });
 
     $effect(() => {
         return viewerStore.subscribe((v) => {
@@ -44,7 +71,6 @@
         });
     });
 
-    // Track pane width so fit-width re-fits on divider/window resize.
     $effect(() => {
         const el = container;
         if (!el) return;
@@ -61,42 +87,33 @@
         return Math.max(MIN_ZOOM, Math.min(z, MAX_ZOOM));
     });
 
-    // Live display scale (drives slot sizes); render scale is debounced so
-    // dragging the divider rescales via CSS smoothly and re-renders crisp on settle.
     const displayScale = $derived(mode === 'fit' ? fitZoom : manualZoom);
 
     let renderScale = $state(1.0);
     $effect(() => {
         const z = displayScale;
-        if (mode === 'manual') {
-            renderScale = z;
-            return;
-        }
+        if (mode === 'manual') { renderScale = z; return; }
         const t = setTimeout(() => { renderScale = z; }, 90);
         return () => clearTimeout(t);
     });
 
-    // Keep the reading position anchored when the scale changes (divider drag,
-    // window resize, manual zoom). Without this the slots resize but scrollTop
-    // stays a fixed pixel value, so the content under the viewport drifts and
-    // you lose your place. We pin the page (+ fractional offset into it) that
-    // sits at the top of the viewport so it stays put across the rescale.
+    // Anchor scroll position across scale changes so the top of the viewport
+    // stays on the same page content (divider drag, window resize, manual zoom).
     let prevScale = 0;
     $effect(() => {
         const scale = displayScale;
         if (!container || !$pdfDoc) { prevScale = scale; return; }
         if (prevScale === 0 || prevScale === scale) { prevScale = scale; return; }
-
         untrack(() => {
             const baseH = $pdfDoc!.defaultHeight;
             const oldH = baseH * prevScale;
             const newH = baseH * scale;
             const oldStride = oldH + GAP;
             const newStride = newH + GAP;
-            const rel = scrollTop - PAD; // offset of viewport top below page 0's top
+            const rel = scrollTop - PAD;
             if (rel > 0) {
                 const idx = Math.min(Math.floor(rel / oldStride), $pdfDoc!.numPages - 1);
-                const frac = (rel - idx * oldStride) / oldH; // position within the anchored page
+                const frac = (rel - idx * oldStride) / oldH;
                 const newTop = PAD + idx * newStride + frac * newH;
                 container!.scrollTop = newTop;
                 scrollTop = newTop;
@@ -105,13 +122,13 @@
         prevScale = scale;
     });
 
-    function pageW() { return ($pdfDoc?.defaultWidth ?? 612) * displayScale; }
+    function pageW() { return ($pdfDoc?.defaultWidth  ?? 612) * displayScale; }
     function pageH() { return ($pdfDoc?.defaultHeight ?? 792) * displayScale; }
     function stride() { return pageH() + GAP; }
 
     const currentPage = $derived.by(() => {
         if (!$pdfDoc) return 0;
-        const idx = Math.round((scrollTop) / stride());
+        const idx = Math.round(scrollTop / stride());
         return Math.max(0, Math.min(idx, $pdfDoc.numPages - 1));
     });
 
@@ -125,7 +142,7 @@
         if (container) scrollTop = container.scrollTop;
     }
 
-    // Virtualization: observe which page slots are near the viewport.
+    // Virtualization: IntersectionObserver drives which page slots get canvases.
     $effect(() => {
         if (!$pdfDoc || !container) return;
         renderedAt = new Map();
@@ -139,13 +156,13 @@
                 }
                 visiblePages = next;
             },
-            { root: container, rootMargin: '800px 0px', threshold: 0 }
+            { root: container, rootMargin: '800px 0px', threshold: 0 },
         );
         pageEls.forEach((el) => el && observer.observe(el));
         return () => observer.disconnect();
     });
 
-    // Render visible pages to their canvases at the current render scale.
+    // Render canvases for visible pages.
     $effect(() => {
         const doc = $pdfDoc;
         const scale = renderScale;
@@ -162,13 +179,121 @@
         }
     });
 
+    // Render text layers for visible pages (enables search highlighting).
+    $effect(() => {
+        const doc = $pdfDoc;
+        const scale = renderScale;
+        const vis = visiblePages;
+        if (!doc) return;
+        for (const i of vis) {
+            const el = textLayerEls[i];
+            if (!el) continue;
+            // data-scale on the element detects freshly-mounted elements even when
+            // scale hasn't changed (page went off-screen and came back).
+            if (el.dataset.scale === String(scale)) continue;
+            el.dataset.scale = String(scale);
+            buildTextLayer(doc.proxy, i, el, scale);
+        }
+    });
+
+    async function buildTextLayer(
+        proxy: import('pdfjs-dist').PDFDocumentProxy,
+        pageIndex: number,
+        el: HTMLElement,
+        scale: number,
+    ) {
+        const page = await getPage(proxy, pageIndex + 1);
+        const viewport = page.getViewport({ scale });
+        el.innerHTML = '';
+        const layer = new TextLayer({ textContentSource: page.streamTextContent(), container: el, viewport });
+        try { await layer.render(); } catch { return; }
+        const itemsStr = layer.textContentItemsStr;
+        let fullText = '';
+        const offsets: number[] = [];
+        for (const s of itemsStr) { offsets.push(fullText.length); fullText += s; }
+        textLayersByPage.set(pageIndex, { divs: layer.textDivs, itemsStr, offsets, fullText });
+        applyHighlightsToPage(pageIndex);
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    function onSearchInput() {
+        if (searchDebounce) clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(runSearch, 300);
+    }
+
+    async function runSearch() {
+        const query = searchQuery.trim();
+        const doc = $pdfDoc;
+        if (!doc || !query) {
+            searchMatches = [];
+            searchMatchIdx = -1;
+            clearHighlights();
+            return;
+        }
+        searching = true;
+        try {
+            const m = await searchAllPages(doc.proxy, doc.numPages, query);
+            searchMatches = m;
+            searchMatchIdx = m.length > 0 ? 0 : -1;
+            applyHighlights();
+            if (m.length > 0) scrollToPage(m[0].pageIndex);
+        } finally {
+            searching = false;
+        }
+    }
+
+    function nextMatch() {
+        if (!searchMatches.length) return;
+        searchMatchIdx = (searchMatchIdx + 1) % searchMatches.length;
+        applyHighlights();
+        scrollToPage(searchMatches[searchMatchIdx].pageIndex);
+    }
+
+    function clearSearch() {
+        searchQuery = '';
+        searchMatches = [];
+        searchMatchIdx = -1;
+        clearHighlights();
+    }
+
+    function clearHighlights() {
+        for (const { divs } of textLayersByPage.values())
+            for (const d of divs) d.classList.remove('search-hi', 'search-cur');
+    }
+
+    function applyHighlights() {
+        clearHighlights();
+        for (const pi of textLayersByPage.keys()) applyHighlightsToPage(pi);
+    }
+
+    function applyHighlightsToPage(pi: number) {
+        const layer = textLayersByPage.get(pi);
+        if (!layer) return;
+        for (const d of layer.divs) d.classList.remove('search-hi', 'search-cur');
+        if (!searchQuery.trim() || !searchMatches.length) return;
+        for (let mi = 0; mi < searchMatches.length; mi++) {
+            const m = searchMatches[mi];
+            if (m.pageIndex !== pi) continue;
+            const cur = mi === searchMatchIdx;
+            for (let j = 0; j < layer.divs.length; j++) {
+                const s = layer.offsets[j];
+                const e = s + (layer.itemsStr[j]?.length ?? 0);
+                if (s < m.end && e > m.start) {
+                    layer.divs[j].classList.add('search-hi');
+                    if (cur) layer.divs[j].classList.add('search-cur');
+                }
+            }
+        }
+    }
+
+    // ── Zoom / page jump ──────────────────────────────────────────────────────
+
     function zoomIn() {
-        const z = Math.min(displayScale + 0.25, 4.0);
-        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: z }));
+        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: Math.min(displayScale + 0.25, 4.0) }));
     }
     function zoomOut() {
-        const z = Math.max(displayScale - 0.25, 0.25);
-        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: z }));
+        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: Math.max(displayScale - 0.25, 0.25) }));
     }
     function fitWidth() {
         viewerStore.update((v) => ({ ...v, mode: 'fit' }));
@@ -177,7 +302,6 @@
     function jumpTo(n: number) {
         if (!$pdfDoc || Number.isNaN(n)) return;
         const page = Math.max(1, Math.min(Math.floor(n), $pdfDoc.numPages)) - 1;
-        // force a scroll even if targetPage is unchanged
         targetPage = page;
         viewerStore.update((v) => ({ ...v, targetPage: page }));
         scrollToPage(page);
@@ -187,6 +311,44 @@
 <div class="viewer-root">
     <div class="toolbar">
         <span class="role-label">{label}</span>
+
+        {#if $pdfDoc}
+            <div class="search-bar">
+                <Icon name="search" size={13} class="search-icon" />
+                <input
+                    class="search-input"
+                    type="search"
+                    placeholder="Search…"
+                    bind:value={searchQuery}
+                    oninput={onSearchInput}
+                    onkeydown={(e) => {
+                        if (e.key === 'Enter') nextMatch();
+                        if (e.key === 'Escape') clearSearch();
+                    }}
+                    aria-label="Search in document"
+                />
+                {#if searching}
+                    <span class="search-count">…</span>
+                {:else if searchQuery}
+                    <span class="search-count" class:no-results={!searchMatches.length}>
+                        {searchMatches.length ? `${searchMatchIdx + 1} / ${searchMatches.length}` : '0'}
+                    </span>
+                    <button
+                        class="icon-btn search-btn"
+                        onclick={nextMatch}
+                        disabled={!searchMatches.length}
+                        title="Next match (Enter)"
+                        aria-label="Next match"
+                    ><Icon name="chevron-down" size={13} /></button>
+                    <button
+                        class="icon-btn search-btn"
+                        onclick={clearSearch}
+                        title="Clear search (Escape)"
+                        aria-label="Clear search"
+                    ><Icon name="x" size={13} /></button>
+                {/if}
+            </div>
+        {/if}
 
         <div class="spacer"></div>
 
@@ -232,6 +394,7 @@
                 >
                     {#if visiblePages.has(i)}
                         <canvas class="page-canvas" bind:this={canvasEls[i]}></canvas>
+                        <div class="text-layer" bind:this={textLayerEls[i]}></div>
                     {/if}
                     <div class="page-label">{i + 1}</div>
                 </div>
@@ -263,6 +426,8 @@
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
+    overflow: hidden;
+    min-width: 0;
 }
 
 .role-label {
@@ -275,10 +440,61 @@
 
 .spacer { flex: 1; }
 
+/* ── Search bar ── */
+.search-bar {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px 4px;
+    min-width: 0;
+    flex-shrink: 1;
+}
+
+:global(.search-bar .search-icon) { color: var(--text-muted); flex-shrink: 0; }
+
+.search-input {
+    width: 110px;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+    padding: 2px 4px;
+}
+
+.search-input::-webkit-search-cancel-button { display: none; }
+
+.search-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    padding: 0 3px;
+    font-variant-numeric: tabular-nums;
+}
+
+.search-count.no-results { color: var(--danger); }
+
+.search-btn {
+    border: none !important;
+    background: transparent !important;
+    padding: 3px !important;
+    min-width: unset !important;
+    border-radius: 3px !important;
+}
+
+.search-btn:hover { background: var(--bg-hover) !important; }
+.search-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Page jump & zoom ── */
 .page-jump {
     display: flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
 }
 
 .page-box {
@@ -301,6 +517,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
 }
 
 .toolbar button {
@@ -337,6 +554,7 @@
 }
 .fit-btn.active:hover { background: var(--accent-hover); }
 
+/* ── Scroll area & pages ── */
 .page-scroll {
     flex: 1;
     overflow: auto;
@@ -378,5 +596,39 @@
     height: 100%;
     color: var(--text-muted);
     font-size: 14px;
+}
+
+/* ── Text layer (PDF.js transparent text overlay for search highlights) ── */
+:global(.text-layer) {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    line-height: 1;
+    pointer-events: none;
+}
+
+:global(.text-layer span),
+:global(.text-layer br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+    pointer-events: auto;
+}
+
+:global(.text-layer .markedContent) {
+    top: 0;
+    height: 0;
+}
+
+:global(.text-layer span.search-hi) {
+    background: rgba(255, 205, 0, 0.45);
+    border-radius: 2px;
+}
+
+:global(.text-layer span.search-cur) {
+    background: rgba(255, 110, 0, 0.6);
+    border-radius: 2px;
 }
 </style>

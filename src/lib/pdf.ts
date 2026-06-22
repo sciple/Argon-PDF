@@ -39,6 +39,70 @@ const renderTasks = new WeakMap<HTMLCanvasElement, RenderTask>();
  * Render `page` into `canvas` at the given CSS scale, at device-pixel resolution
  * (crisp on HiDPI). Cancels any previous render of the same canvas.
  */
+// ── Text search ───────────────────────────────────────────────────────────────
+
+export interface PageTextIndex {
+    fullText: string;
+    items: string[];
+    offsets: number[];
+}
+
+export interface TextMatch {
+    pageIndex: number;
+    start: number;
+    end: number;
+}
+
+const textIdxCache = new WeakMap<PDFDocumentProxy, Map<number, Promise<PageTextIndex>>>();
+
+export async function getPageTextIndex(doc: PDFDocumentProxy, pageIndex: number): Promise<PageTextIndex> {
+    let byPage = textIdxCache.get(doc);
+    if (!byPage) { byPage = new Map(); textIdxCache.set(doc, byPage); }
+    let p = byPage.get(pageIndex);
+    if (!p) {
+        p = getPage(doc, pageIndex + 1).then(async (page) => {
+            const content = await page.getTextContent();
+            let fullText = '';
+            const items: string[] = [];
+            const offsets: number[] = [];
+            for (const raw of content.items) {
+                if ('str' in raw) {
+                    offsets.push(fullText.length);
+                    items.push(raw.str);
+                    fullText += raw.str;
+                }
+            }
+            return { fullText, items, offsets };
+        });
+        byPage.set(pageIndex, p);
+    }
+    return p;
+}
+
+export async function searchAllPages(
+    doc: PDFDocumentProxy,
+    numPages: number,
+    query: string,
+): Promise<TextMatch[]> {
+    if (!query.trim()) return [];
+    const q = query.toLowerCase();
+    const results: TextMatch[] = [];
+    for (let i = 0; i < numPages; i++) {
+        const idx = await getPageTextIndex(doc, i);
+        const lower = idx.fullText.toLowerCase();
+        let pos = 0;
+        for (;;) {
+            const at = lower.indexOf(q, pos);
+            if (at === -1) break;
+            results.push({ pageIndex: i, start: at, end: at + q.length });
+            pos = at + 1;
+        }
+    }
+    return results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function renderPageToCanvas(
     page: PDFPageProxy,
     canvas: HTMLCanvasElement,
