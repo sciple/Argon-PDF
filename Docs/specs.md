@@ -10,3 +10,13 @@ When the user highlights parts of the text (sentences/paragraphs). Every highlig
 The user must be able also to delete (or remove) the highlights
 
 Very important point: you must draft a test strategy so that I can confidently add/remove features from the app during its development, so that I am not afaraid of breaking or introducing any regression. 
+
+## Design Decisions
+
+These decisions resolve open questions in the spec above and keep the app lightweight and streamlined.
+
+1. **Text-snapped highlighting.** Highlights snap to the selectable text of the PDF (the text layer), so the user selects sentences/paragraphs rather than drawing free-form boxes. A single highlight is stored as a *list* of rectangles (a multi-line selection produces multiple rects) plus the page number. Rectangles are stored in **PDF-coordinate space on the unrotated page** (not pixels) so they survive zoom, window resize, and DPI changes.
+
+2. **Central SQLite persistence.** All highlights are stored permanently in a single SQLite database in `%APPDATA%` (not in per-file JSON sidecars). Documents are keyed by **content hash** (with the last-known file path kept as a hint), so highlights survive moving or renaming the PDF. Writes are transactional so a crash mid-write cannot corrupt the store.
+
+3. **Highlighting requires a text layer.** If the opened PDF has no selectable text (e.g. a scanned, image-only document), highlighting is **disabled** and the app displays a clear message (e.g. "This document has no selectable text — highlighting is unavailable"). Viewing, scrolling, zoom, and the dual viewer still work normally. OCR is explicitly out of scope.

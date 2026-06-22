@@ -18,8 +18,8 @@ Core capabilities from [Docs/specs.md](Docs/specs.md):
 
 - **Backend**: Rust (PDF parsing, highlight storage, file I/O)
 - **Frontend**: Tauri webview (HTML/CSS/JS or a framework like React/Svelte — TBD)
-- **PDF rendering**: likely `pdfium-render` or `pdf-rs` crate (decide before scaffolding)
-- **Persistence**: highlights stored locally (SQLite via `rusqlite` or JSON sidecar — TBD)
+- **PDF rendering**: `pdfium-render` (PDFium). Chosen over `pdf-rs` because text-snapped highlighting needs reliable per-glyph text bounding boxes, which PDFium provides. Note: PDFium is a native dynamic library that must be bundled with the app (see Build notes).
+- **Persistence**: single SQLite database in `%APPDATA%` via `rusqlite`. Not per-file JSON sidecars.
 
 ## Common Commands (once scaffolded)
 
@@ -43,6 +43,9 @@ cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
+### Build notes
+`pdfium-render` links against the PDFium native library (`pdfium.dll` on Windows), which is **not** vendored by Cargo. The DLL must be available at dev/runtime and bundled into the Tauri installer (via `tauri.conf.json` resources / `externalBin`). A missing or ABI-mismatched `pdfium.dll` is the most likely first-run failure — confirm it loads before debugging anything else.
+
 ## Architecture Intent
 
 ### Process boundary
@@ -54,7 +57,12 @@ Tauri splits work across two processes:
 Each viewer is an independent component with its own current-page state. The thumbnail strip is a shared source of truth for page count/order but does not own viewer scroll state.
 
 ### Highlight model
-Highlights are PDF-coordinate-space rectangles (not pixel positions) so they survive zoom changes and window resizes. Stored persistently alongside the PDF (keyed by file path or hash).
+Highlighting is **text-snapped**: the user selects text from the PDF's text layer (via PDFium text extraction), not free-form boxes. A single highlight is a *list* of rectangles (a multi-line selection spans several rects) plus a page number — model it as a list, not one box. Rectangles are stored in **PDF-coordinate space on the unrotated page** (not pixels) so they survive zoom changes, window resizes, and DPI changes.
+
+If a PDF has no selectable text (e.g. a scanned/image-only document), highlighting is **disabled** and the UI shows a message; viewing/scrolling/zoom/dual-viewer still work. OCR is out of scope.
+
+### Persistence model
+Highlights live in one SQLite DB in `%APPDATA%`. Documents are keyed by **content hash** (with last-known file path stored as a hint) so highlights survive moving/renaming the PDF. Writes are transactional so a crash mid-write cannot corrupt the store.
 
 ## Test Strategy
 
