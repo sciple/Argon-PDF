@@ -12,8 +12,10 @@
 
     // Thumbnail scale: ~150px wide
     const THUMB_WIDTH_PX = 150;
+    // Render the thumbnail at devicePixelRatio so it isn't blurry on HiDPI screens.
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const scale = $derived(
-        $docStore ? Math.round((THUMB_WIDTH_PX / ((size.width_pts / 72) * 96)) * 100) : 20
+        $docStore ? Math.round((THUMB_WIDTH_PX / ((size.width_pts / 72) * 96)) * dpr * 100) : 20
     );
     const thumbH = $derived(
         Math.round((size.height_pts / size.width_pts) * THUMB_WIDTH_PX)

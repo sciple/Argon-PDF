@@ -9,26 +9,26 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Attempt to load pdfium.dll — wrap in PdfiumHandle BEFORE the setup closure
-    // captures it, so the closure remains Send + 'static.
+    // Load pdfium.dll once into the process-wide PDFIUM static.
     // Search order: next to exe, current dir, system PATH.
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default();
 
-    let pdfium_handle: Option<state::PdfiumHandle> =
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&exe_dir))
-            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .map(|binding| state::PdfiumHandle(Pdfium::new(binding)))
-            .ok();
-
-    if pdfium_handle.is_none() {
-        eprintln!(
-            "WARNING: pdfium.dll not found — PDF rendering will be unavailable. \
-             Place pdfium.dll next to the executable."
-        );
+    match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&exe_dir))
+        .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
+        .or_else(|_| Pdfium::bind_to_system_library())
+    {
+        Ok(binding) => {
+            let _ = state::PDFIUM.set(state::PdfiumHandle(Pdfium::new(binding)));
+        }
+        Err(_) => {
+            eprintln!(
+                "WARNING: pdfium.dll not found — PDF rendering will be unavailable. \
+                 Place pdfium.dll next to the executable."
+            );
+        }
     }
 
     tauri::Builder::default()
@@ -45,7 +45,7 @@ pub fn run() {
                 .expect("failed to open SQLite database");
             store::run_migrations(&db).expect("database migration failed");
 
-            let app_state = AppState::new(pdfium_handle, db);
+            let app_state = AppState::new(db);
             app.manage(app_state);
             Ok(())
         })

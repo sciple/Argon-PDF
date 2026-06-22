@@ -32,7 +32,12 @@
         });
     });
 
-    function scalePct(z: number) { return Math.round(z * 100); }
+    // Render at devicePixelRatio so text is crisp on HiDPI screens (Windows
+    // display scaling). The bitmap is rendered larger but displayed at the same
+    // CSS size, so the browser never has to upscale it. Capped to avoid huge
+    // renders on extreme scaling setups.
+    function dpr() { return Math.min(window.devicePixelRatio || 1, 3); }
+    function scalePct(z: number) { return Math.round(z * dpr() * 100); }
     function ptsToPx(pts: number, z: number) { return (pts / 72) * BASE_DPI * z; }
 
     function scrollToPage(page: number) {
@@ -53,7 +58,9 @@
                 }
                 visiblePages = next;
             },
-            { root: container, rootMargin: '200px 0px', threshold: 0 }
+            // Generous vertical margin so pages render ~1.5 screens ahead of
+            // the viewport and are ready by the time they scroll in.
+            { root: container, rootMargin: '1200px 0px', threshold: 0 }
         );
         pageElements.forEach(el => { if (el) observer.observe(el); });
         return () => observer.disconnect();

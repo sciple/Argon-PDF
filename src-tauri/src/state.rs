@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use lru::LruCache;
-use pdfium_render::prelude::Pdfium;
+use pdfium_render::prelude::{Pdfium, PdfDocument};
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PageSize {
@@ -39,21 +39,34 @@ impl std::ops::Deref for PdfiumHandle {
     }
 }
 
+/// The single, process-wide PDFium binding. Stored in a `static` so loaded
+/// `PdfDocument`s can borrow it for `'static` and be cached across calls
+/// (PDFium is never dropped — the library stays mapped until the process exits).
+pub static PDFIUM: OnceLock<PdfiumHandle> = OnceLock::new();
+
+/// A parsed PDF kept open in memory so we don't re-parse the file on every
+/// page render. Borrows the `'static` PDFIUM binding above.
+/// PDFium is not thread-safe, so every access is serialised behind `AppState.pdf_cache`.
+pub struct DocHandle(pub PdfDocument<'static>);
+unsafe impl Send for DocHandle {}
+unsafe impl Sync for DocHandle {}
+
 pub struct AppState {
-    /// None when pdfium.dll was not found at startup.
-    pub pdfium: Mutex<Option<PdfiumHandle>>,
     pub open_docs: Mutex<HashMap<String, OpenDoc>>,
+    /// Live, parsed documents kept open. This mutex is also the single
+    /// serialisation point for ALL PDFium calls (load / render / text).
+    pub pdf_cache: Mutex<HashMap<String, DocHandle>>,
     /// PNG-encoded page images keyed by (doc_id, page, scale_pct).
     pub render_cache: Mutex<LruCache<RenderKey, Vec<u8>>>,
     pub db: Mutex<rusqlite::Connection>,
 }
 
 impl AppState {
-    pub fn new(pdfium: Option<PdfiumHandle>, db: rusqlite::Connection) -> Self {
+    pub fn new(db: rusqlite::Connection) -> Self {
         Self {
-            pdfium: Mutex::new(pdfium),
             open_docs: Mutex::new(HashMap::new()),
-            render_cache: Mutex::new(LruCache::new(NonZeroUsize::new(128).unwrap())),
+            pdf_cache: Mutex::new(HashMap::new()),
+            render_cache: Mutex::new(LruCache::new(NonZeroUsize::new(256).unwrap())),
             db: Mutex::new(db),
         }
     }

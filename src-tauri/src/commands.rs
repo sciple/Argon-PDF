@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::io::Cursor;
 
 use crate::error::AppError;
-use crate::state::{AppState, OpenDoc, PageSize, RenderKey};
+use crate::state::{AppState, DocHandle, OpenDoc, PageSize, RenderKey, PDFIUM};
 use crate::store::{self, Highlight, HighlightRect};
 
 // ── Types returned to the frontend ──────────────────────────────────────────
@@ -31,6 +31,10 @@ pub struct TextLayout {
     pub chars: Vec<CharRect>,
 }
 
+/// Largest page-bitmap dimension we will render, in pixels. Caps memory and
+/// PNG-encode time at very high zoom × devicePixelRatio combinations.
+const MAX_RENDER_DIM: i32 = 4096;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn compute_doc_id(path: &str) -> Result<String, AppError> {
@@ -44,32 +48,64 @@ fn compute_doc_id(path: &str) -> Result<String, AppError> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-fn render_page_png(
-    pdfium: &Pdfium,
-    path: &str,
-    page_index: u32,
-    scale_pct: u32,
-) -> Result<Vec<u8>, AppError> {
-    let doc = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.to_lowercase().contains("password") {
-                AppError::NeedsPassword
-            } else {
-                AppError::Pdf(msg)
-            }
-        })?;
+fn map_pdf_err(e: PdfiumError) -> AppError {
+    let msg = e.to_string();
+    if msg.to_lowercase().contains("password") {
+        AppError::NeedsPassword
+    } else {
+        AppError::Pdf(msg)
+    }
+}
 
+/// Run `f` against a parsed document, loading and caching it on first use.
+/// Holding the `pdf_cache` lock for the whole call serialises all PDFium access
+/// (PDFium is not thread-safe).
+fn with_document<F, R>(state: &AppState, doc_id: &str, f: F) -> Result<R, AppError>
+where
+    F: FnOnce(&PdfDocument) -> Result<R, AppError>,
+{
+    let path = {
+        let docs = state.open_docs.lock().unwrap();
+        docs.get(doc_id)
+            .ok_or_else(|| AppError::DocNotFound(doc_id.to_string()))?
+            .path
+            .clone()
+    };
+
+    let mut cache = state.pdf_cache.lock().unwrap();
+    if !cache.contains_key(doc_id) {
+        let pdfium = PDFIUM
+            .get()
+            .ok_or_else(|| AppError::Pdf("PDFium library not loaded".into()))?;
+        let doc = pdfium.load_pdf_from_file(&path, None).map_err(map_pdf_err)?;
+        cache.insert(doc_id.to_string(), DocHandle(doc));
+    }
+
+    let handle = cache.get(doc_id).unwrap();
+    f(&handle.0)
+}
+
+fn render_page_png(doc: &PdfDocument, page_index: u32, scale_pct: u32) -> Result<Vec<u8>, AppError> {
     let page = doc
         .pages()
         .get(page_index as u16)
         .map_err(|e| AppError::Pdf(e.to_string()))?;
 
+    // scale_pct already folds in zoom × devicePixelRatio. 96 DPI base.
     let base_dpi: f32 = 96.0;
     let scale = scale_pct as f32 / 100.0;
-    let target_width = ((page.width().value / 72.0) * base_dpi * scale) as i32;
-    let target_height = ((page.height().value / 72.0) * base_dpi * scale) as i32;
+    let mut target_width = ((page.width().value / 72.0) * base_dpi * scale) as i32;
+    let mut target_height = ((page.height().value / 72.0) * base_dpi * scale) as i32;
+
+    // Cap the longest edge to keep memory / encode time bounded.
+    let longest = target_width.max(target_height);
+    if longest > MAX_RENDER_DIM {
+        let factor = MAX_RENDER_DIM as f32 / longest as f32;
+        target_width = (target_width as f32 * factor) as i32;
+        target_height = (target_height as f32 * factor) as i32;
+    }
+    target_width = target_width.max(1);
+    target_height = target_height.max(1);
 
     let config = PdfRenderConfig::new()
         .set_target_width(target_width)
@@ -96,7 +132,7 @@ pub fn open_document(
 ) -> Result<DocumentInfo, AppError> {
     let doc_id = compute_doc_id(&path)?;
 
-    // Return cached info if already loaded
+    // Return cached metadata if already open
     {
         let docs = state.open_docs.lock().unwrap();
         if let Some(doc) = docs.get(&doc_id) {
@@ -109,23 +145,13 @@ pub fn open_document(
         }
     }
 
-    // Load and extract all data inside a block so pdfium_guard is dropped before DB write
+    // Load the document once, compute metadata, and keep it open in the cache.
     let (page_count, has_text_layer, page_sizes) = {
-        let pdfium_guard = state.pdfium.lock().unwrap();
-        let pdfium = pdfium_guard
-            .as_ref()
+        let pdfium = PDFIUM
+            .get()
             .ok_or_else(|| AppError::Pdf("PDFium library not loaded".into()))?;
 
-        let doc = pdfium
-            .load_pdf_from_file(&path, None)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.to_lowercase().contains("password") {
-                    AppError::NeedsPassword
-                } else {
-                    AppError::Pdf(msg)
-                }
-            })?;
+        let doc = pdfium.load_pdf_from_file(&path, None).map_err(map_pdf_err)?;
 
         let page_count = doc.pages().len() as u32;
 
@@ -141,25 +167,24 @@ pub fn open_document(
             });
         }
 
-        // Detect text layer by checking the first few pages
         let has_text_layer = (0..page_count.min(5)).any(|idx| {
             doc.pages()
                 .get(idx as u16)
                 .ok()
-                .map(|p| {
-                    p.text()
-                        .ok()
-                        .map(|t| t.chars().len() > 0)
-                        .unwrap_or(false)
-                })
+                .map(|p| p.text().ok().map(|t| t.chars().len() > 0).unwrap_or(false))
                 .unwrap_or(false)
         });
 
-        // doc and pdfium_guard drop here
+        // Keep the parsed document open for fast subsequent renders.
+        state
+            .pdf_cache
+            .lock()
+            .unwrap()
+            .insert(doc_id.clone(), DocHandle(doc));
+
         (page_count, has_text_layer, page_sizes)
     };
 
-    // Persist document record
     {
         let db = state.db.lock().unwrap();
         store::upsert_document(&db, &doc_id, &path, page_count)?;
@@ -186,24 +211,7 @@ pub fn get_page_text_layout(
     page_index: u32,
     state: tauri::State<'_, AppState>,
 ) -> Result<TextLayout, AppError> {
-    let path = {
-        let docs = state.open_docs.lock().unwrap();
-        docs.get(&doc_id)
-            .ok_or_else(|| AppError::DocNotFound(doc_id.clone()))?
-            .path
-            .clone()
-    };
-
-    let chars = {
-        let pdfium_guard = state.pdfium.lock().unwrap();
-        let pdfium = pdfium_guard
-            .as_ref()
-            .ok_or_else(|| AppError::Pdf("PDFium library not loaded".into()))?;
-
-        let doc = pdfium
-            .load_pdf_from_file(&path, None)
-            .map_err(|e| AppError::Pdf(e.to_string()))?;
-
+    with_document(&state, &doc_id, |doc| {
         let page = doc
             .pages()
             .get(page_index as u16)
@@ -215,7 +223,7 @@ pub fn get_page_text_layout(
         };
 
         let char_count = text_page.chars().len();
-        let mut chars = Vec::with_capacity(char_count);
+        let mut chars = Vec::with_capacity(char_count as usize);
         for idx in 0..char_count {
             if let Ok(ch) = text_page.chars().get(idx) {
                 if let Ok(bounds) = ch.loose_bounds() {
@@ -231,11 +239,8 @@ pub fn get_page_text_layout(
                 }
             }
         }
-        // doc, text_page, page, pdfium_guard all dropped here
-        chars
-    };
-
-    Ok(TextLayout { chars })
+        Ok(TextLayout { chars })
+    })
 }
 
 #[tauri::command]
@@ -251,24 +256,7 @@ pub fn add_highlight(
         return Err(AppError::Pdf("Empty selection".into()));
     }
 
-    let path = {
-        let docs = state.open_docs.lock().unwrap();
-        docs.get(&doc_id)
-            .ok_or_else(|| AppError::DocNotFound(doc_id.clone()))?
-            .path
-            .clone()
-    };
-
-    let (rects, excerpt) = {
-        let pdfium_guard = state.pdfium.lock().unwrap();
-        let pdfium = pdfium_guard
-            .as_ref()
-            .ok_or_else(|| AppError::Pdf("PDFium library not loaded".into()))?;
-
-        let doc = pdfium
-            .load_pdf_from_file(&path, None)
-            .map_err(|e| AppError::Pdf(e.to_string()))?;
-
+    let (rects, excerpt) = with_document(&state, &doc_id, |doc| {
         let page = doc
             .pages()
             .get(page_index as u16)
@@ -288,7 +276,6 @@ pub fn add_highlight(
                         width: bounds.right().value - bounds.left().value,
                         height: bounds.top().value - bounds.bottom().value,
                     };
-                    // Merge consecutive chars on the same line into one rect
                     if let Some(last) = rects.last_mut() {
                         let same_line = (last.y - r.y).abs() < 2.0 && r.x >= last.x;
                         if same_line {
@@ -311,9 +298,8 @@ pub fn add_highlight(
         }
 
         let excerpt: String = excerpt_chars.chars().take(120).collect();
-        // doc, text_page, page, pdfium_guard dropped here
-        (rects, excerpt)
-    };
+        Ok((rects, excerpt))
+    })?;
 
     let color = color.unwrap_or_else(|| "#FFFF00".to_string());
     let db = state.db.lock().unwrap();
@@ -330,10 +316,7 @@ pub fn list_highlights(
 }
 
 #[tauri::command]
-pub fn delete_highlight(
-    id: i64,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), AppError> {
+pub fn delete_highlight(id: i64, state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     let db = state.db.lock().unwrap();
     store::delete_highlight(&db, id)
 }
@@ -356,22 +339,7 @@ pub fn render_page_cached(
         return Ok(cached.clone());
     }
 
-    let path = {
-        let docs = state.open_docs.lock().unwrap();
-        docs.get(doc_id)
-            .ok_or_else(|| AppError::DocNotFound(doc_id.to_string()))?
-            .path
-            .clone()
-    };
-
-    let png = {
-        let pdfium_guard = state.pdfium.lock().unwrap();
-        let pdfium = pdfium_guard
-            .as_ref()
-            .ok_or_else(|| AppError::Pdf("PDFium library not loaded".into()))?;
-        render_page_png(&pdfium.0, &path, page_index, scale_pct)?
-        // pdfium_guard dropped here
-    };
+    let png = with_document(state, doc_id, |doc| render_page_png(doc, page_index, scale_pct))?;
 
     state.render_cache.lock().unwrap().put(key, png.clone());
     Ok(png)
