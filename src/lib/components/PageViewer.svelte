@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from 'svelte';
     import { pdfDoc } from '../stores.js';
     import { getPage, renderPageToCanvas } from '../pdf.js';
     import type { ViewerState } from '../types.js';
@@ -72,6 +73,35 @@
         }
         const t = setTimeout(() => { renderScale = z; }, 90);
         return () => clearTimeout(t);
+    });
+
+    // Keep the reading position anchored when the scale changes (divider drag,
+    // window resize, manual zoom). Without this the slots resize but scrollTop
+    // stays a fixed pixel value, so the content under the viewport drifts and
+    // you lose your place. We pin the page (+ fractional offset into it) that
+    // sits at the top of the viewport so it stays put across the rescale.
+    let prevScale = 0;
+    $effect(() => {
+        const scale = displayScale;
+        if (!container || !$pdfDoc) { prevScale = scale; return; }
+        if (prevScale === 0 || prevScale === scale) { prevScale = scale; return; }
+
+        untrack(() => {
+            const baseH = $pdfDoc!.defaultHeight;
+            const oldH = baseH * prevScale;
+            const newH = baseH * scale;
+            const oldStride = oldH + GAP;
+            const newStride = newH + GAP;
+            const rel = scrollTop - PAD; // offset of viewport top below page 0's top
+            if (rel > 0) {
+                const idx = Math.min(Math.floor(rel / oldStride), $pdfDoc!.numPages - 1);
+                const frac = (rel - idx * oldStride) / oldH; // position within the anchored page
+                const newTop = PAD + idx * newStride + frac * newH;
+                container!.scrollTop = newTop;
+                scrollTop = newTop;
+            }
+        });
+        prevScale = scale;
     });
 
     function pageW() { return ($pdfDoc?.defaultWidth ?? 612) * displayScale; }
