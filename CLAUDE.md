@@ -17,11 +17,11 @@ Core capabilities from [Docs/specs.md](Docs/specs.md):
 ## Tech Stack
 
 - **Backend**: Rust (PDF parsing, highlight storage, file I/O)
-- **Frontend**: Tauri webview (HTML/CSS/JS or a framework like React/Svelte — TBD)
+- **Frontend**: Svelte 5 + Vite + TypeScript
 - **PDF rendering**: `pdfium-render` (PDFium). Chosen over `pdf-rs` because text-snapped highlighting needs reliable per-glyph text bounding boxes, which PDFium provides. Note: PDFium is a native dynamic library that must be bundled with the app (see Build notes).
 - **Persistence**: single SQLite database in `%APPDATA%` via `rusqlite`. Not per-file JSON sidecars.
 
-## Common Commands (once scaffolded)
+## Common Commands
 
 ```bash
 # Development
@@ -41,6 +41,12 @@ cargo clippy -- -D warnings
 
 # Format
 cargo fmt --check
+
+# Frontend tests
+npm run test
+
+# Frontend dev (without Tauri)
+npm run dev
 ```
 
 ### Build notes
@@ -51,7 +57,7 @@ cargo fmt --check
 ### Process boundary
 Tauri splits work across two processes:
 - **Rust core** (`src-tauri/`): PDF page rendering, highlight CRUD, file management. Exposed to the frontend via Tauri commands (`#[tauri::command]`).
-- **Webview frontend** (`src/` or `ui/`): Three-panel layout, zoom controls, highlight overlay, notes UI. Communicates with Rust via `invoke()`.
+- **Webview frontend** (`src/`): Three-panel layout, zoom controls, highlight overlay, notes UI. Communicates with Rust via `invoke()`.
 
 ### Dual-viewer design
 Each viewer is an independent component with its own current-page state. The thumbnail strip is a shared source of truth for page count/order but does not own viewer scroll state.
@@ -70,7 +76,7 @@ Per the spec, a test strategy is required to allow fearless feature addition/rem
 
 1. **Rust unit tests** — pure functions: PDF page count, highlight serialization/deserialization, coordinate math.
 2. **Tauri command integration tests** — test each `#[tauri::command]` handler in isolation using Tauri's test utilities.
-3. **UI component tests** — test viewer and panel components independently (e.g., Vitest + Testing Library if using a JS framework).
-4. **End-to-end tests** — WebdriverIO or Playwright with Tauri's WebDriver support; cover: open PDF → navigate pages → add highlight → reopen → verify highlight persists → delete highlight.
+3. **UI component tests** — test viewer and panel components independently (Vitest + @testing-library/svelte).
+4. **End-to-end tests** — Playwright via tauri-driver; cover: open PDF → navigate pages → add highlight → reopen → verify highlight persists → delete highlight.
 
 Regression gate: CI must pass all four layers before merging any feature branch.
