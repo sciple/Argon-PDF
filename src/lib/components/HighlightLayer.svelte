@@ -71,7 +71,7 @@
     position: absolute;
     top: -14px;
     right: 0;
-    background: #f38ba8;
+    background: var(--danger);
     color: white;
     font-size: 10px;
     padding: 1px 4px;

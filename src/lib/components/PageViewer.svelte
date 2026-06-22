@@ -155,7 +155,7 @@
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-    background: #181825;
+    background: var(--bg-canvas);
     position: relative;
 }
 
@@ -164,23 +164,23 @@
     align-items: center;
     gap: 4px;
     padding: 4px 8px;
-    background: #1e1e2e;
-    border-bottom: 1px solid #313244;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
 
 .zoom-bar button {
     min-width: 32px;
     padding: 2px 8px;
-    background: #313244;
-    border: 1px solid #45475a;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #cdd6f4;
+    color: var(--text);
     cursor: pointer;
     font-size: 13px;
 }
 
-.zoom-bar button:hover { background: #45475a; }
+.zoom-bar button:hover { background: var(--bg-hover); }
 
 .page-scroll {
     flex: 1;
@@ -195,7 +195,8 @@
 
 .page-slot {
     position: relative;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+    border: 1px solid var(--border);
     background: white;
     flex-shrink: 0;
 }
@@ -216,7 +217,7 @@
     right: 0;
     text-align: center;
     font-size: 10px;
-    color: #6c7086;
+    color: var(--text-muted);
 }
 
 .empty-state {
@@ -224,7 +225,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #6c7086;
+    color: var(--text-muted);
     font-size: 14px;
 }
 
@@ -233,8 +234,9 @@
     bottom: 8px;
     left: 8px;
     right: 8px;
-    background: #45475a;
-    color: #fab387;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
     padding: 8px 12px;
     border-radius: 6px;
     font-size: 12px;

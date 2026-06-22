@@ -55,8 +55,8 @@
     min-width: 180px;
     overflow-y: auto;
     overflow-x: hidden;
-    background: #1e1e2e;
-    border-right: 1px solid #313244;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -75,7 +75,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #6c7086;
+    color: var(--text-muted);
     font-size: 12px;
 }
 </style>

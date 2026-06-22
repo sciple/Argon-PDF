@@ -25,6 +25,21 @@
 </div>
 
 <style>
+:global(:root) {
+    /* Light theme palette */
+    --bg-canvas: #e7e7ec;   /* viewer area behind the white pages */
+    --bg-panel: #ffffff;    /* top bar, thumbnail strip, notes panel */
+    --bg-elevated: #f1f1f4; /* buttons, chips */
+    --bg-hover: #e4e4ea;    /* hover state */
+    --border: #d9d9e0;      /* panel borders / dividers */
+    --text: #1f1f24;        /* primary text */
+    --text-muted: #71717a;  /* secondary text */
+    --accent: #7c3aed;      /* brand purple */
+    --accent-hover: #6d28d9;
+    --on-accent: #ffffff;   /* text on accent */
+    --danger: #dc2626;      /* delete / errors */
+}
+
 :global(*, *::before, *::after) {
     box-sizing: border-box;
 }
@@ -35,8 +50,8 @@
     height: 100%;
     overflow: hidden;
     font-family: system-ui, -apple-system, sans-serif;
-    background: #181825;
-    color: #cdd6f4;
+    background: var(--bg-canvas);
+    color: var(--text);
 }
 
 :global(#svelte) {
@@ -63,7 +78,7 @@
 
 .viewer-divider {
     width: 3px;
-    background: #313244;
+    background: var(--border);
     flex-shrink: 0;
 }
 </style>

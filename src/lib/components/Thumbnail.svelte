@@ -64,8 +64,8 @@
     position: relative;
     cursor: pointer;
     flex-shrink: 0;
-    background: #1e1e2e;
-    border: 1px solid #313244;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: 4px;
     overflow: visible;
 }
@@ -80,7 +80,7 @@
 
 .thumb-placeholder {
     width: 100%;
-    background: #313244;
+    background: var(--bg-hover);
     border-radius: 3px;
 }
 
@@ -91,7 +91,7 @@
     right: 0;
     text-align: center;
     font-size: 10px;
-    color: #6c7086;
+    color: var(--text-muted);
     pointer-events: none;
 }
 
@@ -103,21 +103,21 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    background: rgba(30, 30, 46, 0.75);
+    background: rgba(255, 255, 255, 0.78);
     border-radius: 3px;
 }
 
 .hover-buttons button {
     width: 80%;
     padding: 4px 0;
-    background: #7c3aed;
+    background: var(--accent);
     border: none;
     border-radius: 4px;
-    color: white;
+    color: var(--on-accent);
     font-size: 12px;
     cursor: pointer;
     font-weight: 600;
 }
 
-.hover-buttons button:hover { background: #6d28d9; }
+.hover-buttons button:hover { background: var(--accent-hover); }
 </style>

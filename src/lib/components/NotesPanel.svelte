@@ -48,8 +48,8 @@
     min-width: 260px;
     height: 100%;
     overflow-y: auto;
-    background: #1e1e2e;
-    border-left: 1px solid #313244;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
 }
@@ -57,15 +57,15 @@
 .panel-title {
     font-size: 13px;
     font-weight: 700;
-    color: #cba6f7;
+    color: var(--accent);
     padding: 12px 16px 8px;
-    border-bottom: 1px solid #313244;
+    border-bottom: 1px solid var(--border);
     margin: 0;
     flex-shrink: 0;
 }
 
 .notes-empty {
-    color: #6c7086;
+    color: var(--text-muted);
     font-size: 12px;
     padding: 16px;
     margin: 0;
@@ -85,11 +85,11 @@
     align-items: flex-start;
     gap: 8px;
     padding: 8px 12px;
-    border-bottom: 1px solid #313244;
+    border-bottom: 1px solid var(--border);
     transition: background 0.1s;
 }
 
-.note-item:hover { background: #313244; }
+.note-item:hover { background: var(--bg-elevated); }
 
 .note-color {
     width: 6px;
@@ -109,12 +109,12 @@
 
 .note-page {
     font-size: 10px;
-    color: #6c7086;
+    color: var(--text-muted);
 }
 
 .note-excerpt {
     font-size: 12px;
-    color: #cdd6f4;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     display: -webkit-box;
@@ -132,10 +132,10 @@
 .note-actions button {
     width: 24px;
     height: 20px;
-    background: #313244;
-    border: 1px solid #45475a;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: 3px;
-    color: #cdd6f4;
+    color: var(--text);
     cursor: pointer;
     font-size: 11px;
     padding: 0;
@@ -144,6 +144,6 @@
     justify-content: center;
 }
 
-.note-actions button:hover { background: #45475a; }
-.delete-btn:hover { background: #f38ba822 !important; color: #f38ba8; border-color: #f38ba8; }
+.note-actions button:hover { background: var(--bg-hover); }
+.delete-btn:hover { background: #fee2e2 !important; color: var(--danger); border-color: var(--danger); }
 </style>

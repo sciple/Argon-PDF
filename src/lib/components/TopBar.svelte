@@ -85,9 +85,9 @@
     gap: 12px;
     padding: 0 16px;
     height: 44px;
-    background: #1e1e2e;
-    color: #cdd6f4;
-    border-bottom: 1px solid #313244;
+    background: var(--bg-panel);
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     user-select: none;
 }
@@ -95,37 +95,38 @@
 .app-name {
     font-weight: 700;
     letter-spacing: 0.05em;
-    color: #cba6f7;
+    color: var(--accent);
 }
 
 .btn-open, .btn-notes {
     padding: 4px 14px;
     border-radius: 6px;
-    border: 1px solid #45475a;
-    background: #313244;
-    color: #cdd6f4;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text);
     cursor: pointer;
     font-size: 13px;
     transition: background 0.15s;
 }
 
 .btn-open:hover, .btn-notes:hover {
-    background: #45475a;
+    background: var(--bg-hover);
 }
 
 .btn-notes.active {
-    background: #7c3aed;
-    border-color: #7c3aed;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
 }
 
 .error-msg {
-    color: #f38ba8;
+    color: var(--danger);
     font-size: 12px;
 }
 
 .drag-hint {
     margin-left: auto;
     font-size: 11px;
-    color: #6c7086;
+    color: var(--text-muted);
 }
 </style>
