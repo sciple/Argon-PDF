@@ -2,7 +2,7 @@
     import TopBar from '$lib/components/TopBar.svelte';
     import ThumbnailStrip from '$lib/components/ThumbnailStrip.svelte';
     import PageViewer from '$lib/components/PageViewer.svelte';
-    import { mainViewer, sideViewer, sideOpen } from '$lib/stores.js';
+    import { mainViewer, sideViewer, sideOpen, stripOpen } from '$lib/stores.js';
 
     // Fraction of the viewer area given to the main panel (rest goes to side).
     let centerFraction = $state(0.5);
@@ -58,7 +58,9 @@
     <TopBar />
 
     <div class="main-area">
-        <ThumbnailStrip />
+        {#if $stripOpen}
+            <ThumbnailStrip />
+        {/if}
 
         <div class="viewers" class:dragging bind:this={viewersEl}>
             <div class="viewer-pane" style="flex-grow: {$sideOpen ? centerFraction : 1}">

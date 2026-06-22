@@ -19,3 +19,4 @@ export const mainViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', ma
 export const sideViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', manualZoom: 1.0 });
 
 export const sideOpen = writable<boolean>(true);
+export const stripOpen = writable<boolean>(true);

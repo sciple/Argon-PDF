@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
     import { getCurrentWebview } from '@tauri-apps/api/webview';
-    import { pdfDoc, mainViewer, sideViewer, sideOpen } from '../stores.js';
+    import { pdfDoc, mainViewer, sideViewer, sideOpen, stripOpen } from '../stores.js';
     import { openDocumentDialog, readPdf, baseName } from '../api.js';
     import { loadPdf, getPage } from '../pdf.js';
     import Icon from './Icon.svelte';
@@ -61,6 +61,17 @@
 
 <header class="topbar" class:drag-hover={dragHover}>
     <span class="app-name">Argon-PDF</span>
+
+    <button
+        onclick={() => stripOpen.update((v) => !v)}
+        class="btn icon-btn"
+        class:active={$stripOpen}
+        title={$stripOpen ? 'Hide thumbnail panel' : 'Show thumbnail panel'}
+        aria-label={$stripOpen ? 'Hide thumbnail panel' : 'Show thumbnail panel'}
+        aria-pressed={$stripOpen}
+    >
+        <Icon name="sidebar" />
+    </button>
 
     <button
         onclick={handleOpen}
