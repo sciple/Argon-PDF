@@ -1,14 +1,13 @@
 <script lang="ts">
-    import { document as docStore } from '../stores.js';
+    import { pdfDoc } from '../stores.js';
     import Thumbnail from './Thumbnail.svelte';
 
-    let container: HTMLElement;
+    let container = $state<HTMLElement>();
     let visibleThumbs = $state(new Set<number>());
-    let thumbElements: HTMLElement[] = [];
+    let thumbEls: HTMLElement[] = [];
 
     $effect(() => {
-        if (!$docStore || !container) return;
-
+        if (!$pdfDoc || !container) return;
         const observer = new IntersectionObserver(
             (entries) => {
                 const next = new Set(visibleThumbs);
@@ -19,33 +18,22 @@
                 }
                 visibleThumbs = next;
             },
-            { root: container, rootMargin: '300px 0px', threshold: 0 }
+            { root: container, rootMargin: '400px 0px', threshold: 0 }
         );
-
-        thumbElements.forEach(el => { if (el) observer.observe(el); });
+        thumbEls.forEach((el) => el && observer.observe(el));
         return () => observer.disconnect();
     });
 </script>
 
 <aside class="strip" bind:this={container}>
-    {#if $docStore}
-        {#each $docStore.page_sizes as size, i}
-            <div
-                class="thumb-row"
-                data-thumb-idx={i}
-                bind:this={thumbElements[i]}
-            >
-                <Thumbnail
-                    pageIndex={i}
-                    {size}
-                    visible={visibleThumbs.has(i)}
-                />
+    {#if $pdfDoc}
+        {#each Array($pdfDoc.numPages) as _, i (i)}
+            <div class="thumb-row" data-thumb-idx={i} bind:this={thumbEls[i]}>
+                <Thumbnail pageIndex={i} visible={visibleThumbs.has(i)} />
             </div>
         {/each}
     {:else}
-        <div class="strip-empty">
-            <span>No PDF open</span>
-        </div>
+        <div class="strip-empty"><span>No PDF open</span></div>
     {/if}
 </aside>
 

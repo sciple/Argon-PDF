@@ -20,3 +20,21 @@ These decisions resolve open questions in the spec above and keep the app lightw
 2. **Central SQLite persistence.** All highlights are stored permanently in a single SQLite database in `%APPDATA%` (not in per-file JSON sidecars). Documents are keyed by **content hash** (with the last-known file path kept as a hint), so highlights survive moving or renaming the PDF. Writes are transactional so a crash mid-write cannot corrupt the store.
 
 3. **Highlighting requires a text layer.** If the opened PDF has no selectable text (e.g. a scanned, image-only document), highlighting is **disabled** and the app displays a clear message (e.g. "This document has no selectable text — highlighting is unavailable"). Viewing, scrolling, zoom, and the dual viewer still work normally. OCR is explicitly out of scope.
+
+## Revised scope (current — supersedes parts of the above)
+
+After early iterations, the app was re-scoped around its real use case — **working maths
+exercises while checking the solution on a second page** — and around a hard requirement that
+text be **crisp like Firefox/Adobe**.
+
+- **Rendering pivoted to PDF.js (`pdfjs-dist`)**, rendering pages to `<canvas>` at the device
+  pixel ratio (the same engine Firefox uses). The earlier "render to PNG in Rust (PDFium) and
+  show in `<img>`" pipeline was removed because it was persistently blurry at fractional Windows
+  display scaling. The Rust backend is now just a file-bytes reader.
+- **Dropped: notes panel, text highlighting, and persistence (SQLite).** With those gone, the
+  PDFium / SQLite / custom-image-protocol backend was deleted. (Design Decisions 1–3 above are
+  retained as history but no longer implemented.)
+- **Kept:** two independent page viewers (Main + Side), thumbnail strip, draggable divider,
+  light theme, open via dialog + drag-drop.
+- **Added:** a **page-number box** per viewer to jump straight to a page, **thumbnail → Main/Side**
+  to open a page in either viewer, and fit-width-by-default zoom (manual zoom on +/−).

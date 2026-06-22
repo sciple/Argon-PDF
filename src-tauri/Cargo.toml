@@ -23,9 +23,4 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-pdfium-render = { version = "0.8", features = ["image"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
-blake3 = "1"
-lru = "0.12"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 

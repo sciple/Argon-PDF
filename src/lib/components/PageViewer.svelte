@@ -1,37 +1,38 @@
 <script lang="ts">
-    import { document as docStore, highlights } from '../stores.js';
-    import { renderUrl } from '../api.js';
-    import HighlightLayer from './HighlightLayer.svelte';
-    import SelectionLayer from './SelectionLayer.svelte';
+    import { pdfDoc } from '../stores.js';
+    import { getPage, renderPageToCanvas } from '../pdf.js';
     import type { ViewerState } from '../types.js';
     import type { Writable } from 'svelte/store';
 
     interface Props {
         viewerStore: Writable<ViewerState>;
-        role: 'center' | 'right';
+        label: string;
     }
-    let { viewerStore, role }: Props = $props();
+    let { viewerStore, label }: Props = $props();
 
-    const BASE_DPI = 96;
-    const FIT_MARGIN = 24; // px breathing room around the page in fit mode
+    const GAP = 12;
+    const PAD = 16;
+    const FIT_MARGIN = 16;
     const MIN_ZOOM = 0.1;
     const MAX_ZOOM = 6.0;
 
     let container = $state<HTMLElement>();
     let visiblePages = $state(new Set<number>());
-    let pageElements: HTMLElement[] = [];
+    let pageEls: HTMLElement[] = [];
+    let canvasEls: HTMLCanvasElement[] = [];
+    // page index -> scale it was last rendered at (avoid redundant re-renders)
+    let renderedAt = new Map<number, number>();
 
-    // Mirrors of the viewer store
+    // Mirrored store state
     let mode = $state<'fit' | 'manual'>('fit');
     let manualZoom = $state(1.0);
     let targetPage = $state(0);
 
-    // Available content width of the scroll area (tracked via ResizeObserver).
     let containerWidth = $state(0);
+    let scrollTop = $state(0);
 
     $effect(() => {
-        // Use effect so the subscription re-binds if viewerStore prop changes
-        return viewerStore.subscribe(v => {
+        return viewerStore.subscribe((v) => {
             mode = v.mode;
             manualZoom = v.manualZoom;
             if (v.targetPage !== targetPage) {
@@ -41,7 +42,7 @@
         });
     });
 
-    // Track the pane's content width so fit-width re-fits on divider/window resize.
+    // Track pane width so fit-width re-fits on divider/window resize.
     $effect(() => {
         const el = container;
         if (!el) return;
@@ -52,53 +53,51 @@
         return () => ro.disconnect();
     });
 
-    // Widest page drives the fit scale so no page overflows horizontally.
-    const maxPageWidthPts = $derived(
-        $docStore && $docStore.page_sizes.length
-            ? Math.max(...$docStore.page_sizes.map((s) => s.width_pts))
-            : 612
-    );
-
-    // Zoom that makes the widest page fill the available width.
     const fitZoom = $derived.by(() => {
-        if (!$docStore || containerWidth <= 0) return 1.0;
-        const pageWpx = (maxPageWidthPts / 72) * BASE_DPI;
-        const z = (containerWidth - FIT_MARGIN) / pageWpx;
+        if (!$pdfDoc || containerWidth <= 0) return 1.0;
+        const z = (containerWidth - FIT_MARGIN) / $pdfDoc.defaultWidth;
         return Math.max(MIN_ZOOM, Math.min(z, MAX_ZOOM));
     });
 
-    // The zoom actually used for layout/overlays (display size).
-    const effectiveZoom = $derived(mode === 'fit' ? fitZoom : manualZoom);
-
-    // The zoom used for the rendered bitmap resolution. Debounced in fit mode so
+    // Live display scale (drives slot sizes); render scale is debounced so
     // dragging the divider rescales via CSS smoothly and re-renders crisp on settle.
-    let renderZoom = $state(1.0);
+    const displayScale = $derived(mode === 'fit' ? fitZoom : manualZoom);
+
+    let renderScale = $state(1.0);
     $effect(() => {
-        const z = effectiveZoom;
+        const z = displayScale;
         if (mode === 'manual') {
-            renderZoom = z; // discrete button clicks: update immediately
+            renderScale = z;
             return;
         }
-        const t = setTimeout(() => { renderZoom = z; }, 100);
+        const t = setTimeout(() => { renderScale = z; }, 90);
         return () => clearTimeout(t);
     });
 
-    // Render at devicePixelRatio so text is crisp on HiDPI screens (Windows
-    // display scaling). The bitmap is rendered larger but displayed at the same
-    // CSS size, so the browser never has to upscale it. Capped to avoid huge
-    // renders on extreme scaling setups.
-    function dpr() { return Math.min(window.devicePixelRatio || 1, 3); }
-    function scalePct(z: number) { return Math.round(z * dpr() * 100); }
-    function ptsToPx(pts: number, z: number) { return (pts / 72) * BASE_DPI * z; }
+    function pageW() { return ($pdfDoc?.defaultWidth ?? 612) * displayScale; }
+    function pageH() { return ($pdfDoc?.defaultHeight ?? 792) * displayScale; }
+    function stride() { return pageH() + GAP; }
+
+    const currentPage = $derived.by(() => {
+        if (!$pdfDoc) return 0;
+        const idx = Math.round((scrollTop) / stride());
+        return Math.max(0, Math.min(idx, $pdfDoc.numPages - 1));
+    });
 
     function scrollToPage(page: number) {
-        if (!container || !$docStore) return;
-        const el = pageElements[page];
+        if (!container || !$pdfDoc) return;
+        const el = pageEls[page];
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    function setupObserver() {
-        if (!container) return;
+    function onScroll() {
+        if (container) scrollTop = container.scrollTop;
+    }
+
+    // Virtualization: observe which page slots are near the viewport.
+    $effect(() => {
+        if (!$pdfDoc || !container) return;
+        renderedAt = new Map();
         const observer = new IntersectionObserver(
             (entries) => {
                 const next = new Set(visiblePages);
@@ -109,93 +108,95 @@
                 }
                 visiblePages = next;
             },
-            // Generous vertical margin so pages render ~1.5 screens ahead of
-            // the viewport and are ready by the time they scroll in.
-            { root: container, rootMargin: '1200px 0px', threshold: 0 }
+            { root: container, rootMargin: '800px 0px', threshold: 0 }
         );
-        pageElements.forEach(el => { if (el) observer.observe(el); });
+        pageEls.forEach((el) => el && observer.observe(el));
         return () => observer.disconnect();
-    }
+    });
 
+    // Render visible pages to their canvases at the current render scale.
     $effect(() => {
-        // Re-run observer whenever doc or zoom changes (new pageElements)
-        if ($docStore) {
-            const cleanup = setupObserver();
-            return cleanup;
+        const doc = $pdfDoc;
+        const scale = renderScale;
+        const vis = visiblePages;
+        if (!doc) return;
+        for (const i of vis) {
+            if (renderedAt.get(i) === scale) continue;
+            const canvas = canvasEls[i];
+            if (!canvas) continue;
+            renderedAt.set(i, scale);
+            getPage(doc.proxy, i + 1)
+                .then((pg) => renderPageToCanvas(pg, canvas, scale))
+                .catch(() => renderedAt.delete(i));
         }
     });
 
-    // Explicit zoom actions switch the viewer into manual mode, continuing from
-    // whatever zoom is currently displayed (the fit zoom, if we were fitting).
     function zoomIn() {
-        const z = Math.min(effectiveZoom + 0.25, 4.0);
-        viewerStore.update(v => ({ ...v, mode: 'manual', manualZoom: z }));
+        const z = Math.min(displayScale + 0.25, 4.0);
+        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: z }));
     }
-
     function zoomOut() {
-        const z = Math.max(effectiveZoom - 0.25, 0.25);
-        viewerStore.update(v => ({ ...v, mode: 'manual', manualZoom: z }));
+        const z = Math.max(displayScale - 0.25, 0.25);
+        viewerStore.update((v) => ({ ...v, mode: 'manual', manualZoom: z }));
     }
-
     function fitWidth() {
-        viewerStore.update(v => ({ ...v, mode: 'fit' }));
+        viewerStore.update((v) => ({ ...v, mode: 'fit' }));
     }
 
-    // Filter highlights for a specific page
-    function pageHighlights(pageIdx: number) {
-        return $highlights.filter(h => h.page_index === pageIdx);
+    function jumpTo(n: number) {
+        if (!$pdfDoc || Number.isNaN(n)) return;
+        const page = Math.max(1, Math.min(Math.floor(n), $pdfDoc.numPages)) - 1;
+        // force a scroll even if targetPage is unchanged
+        targetPage = page;
+        viewerStore.update((v) => ({ ...v, targetPage: page }));
+        scrollToPage(page);
     }
 </script>
 
 <div class="viewer-root">
-    <!-- Zoom controls -->
-    <div class="zoom-bar">
-        <button onclick={zoomOut} title="Zoom out">−</button>
-        <button class="zoom-pct" onclick={fitWidth} title="Fit width">{Math.round(effectiveZoom * 100)}%</button>
-        <button onclick={zoomIn} title="Zoom in">+</button>
-        <button class="fit-btn" class:active={mode === 'fit'} onclick={fitWidth} title="Fit page width">Fit</button>
+    <div class="toolbar">
+        <span class="role-label">{label}</span>
+
+        <div class="spacer"></div>
+
+        {#if $pdfDoc}
+            <label class="page-jump">
+                <input
+                    class="page-box"
+                    type="number"
+                    min="1"
+                    max={$pdfDoc.numPages}
+                    value={currentPage + 1}
+                    onkeydown={(e) => { if (e.key === 'Enter') jumpTo(Number((e.currentTarget as HTMLInputElement).value)); }}
+                    onchange={(e) => jumpTo(Number((e.currentTarget as HTMLInputElement).value))}
+                />
+                <span class="page-total">/ {$pdfDoc.numPages}</span>
+            </label>
+
+            <div class="zoom-group">
+                <button onclick={zoomOut} title="Zoom out">−</button>
+                <button class="zoom-pct" onclick={fitWidth} title="Fit width">{Math.round(displayScale * 100)}%</button>
+                <button onclick={zoomIn} title="Zoom in">+</button>
+                <button class="fit-btn" class:active={mode === 'fit'} onclick={fitWidth} title="Fit page width">Fit</button>
+            </div>
+        {/if}
     </div>
 
-    <!-- Scrollable page area -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="page-scroll" bind:this={container}>
-        {#if $docStore}
-            {#each $docStore.page_sizes as size, i}
-                {@const pw = ptsToPx(size.width_pts, effectiveZoom)}
-                {@const ph = ptsToPx(size.height_pts, effectiveZoom)}
+    <div class="page-scroll" bind:this={container} onscroll={onScroll}>
+        {#if $pdfDoc}
+            {@const pw = pageW()}
+            {@const ph = pageH()}
+            {#each Array($pdfDoc.numPages) as _, i (i)}
                 <div
                     class="page-slot"
                     data-page-idx={i}
                     style="width: {pw}px; height: {ph}px;"
-                    bind:this={pageElements[i]}
+                    bind:this={pageEls[i]}
                 >
                     {#if visiblePages.has(i)}
-                        <!-- Raster bitmap from PDFium (resolution = renderZoom × DPR) -->
-                        <img
-                            src={renderUrl($docStore.doc_id, i, scalePct(renderZoom))}
-                            alt="Page {i + 1}"
-                            width={pw}
-                            height={ph}
-                            draggable="false"
-                        />
-                        <!-- Existing highlights -->
-                        <HighlightLayer
-                            pageHighlights={pageHighlights(i)}
-                            {size}
-                            zoom={effectiveZoom}
-                            pageIndex={i}
-                        />
-                        <!-- Text selection overlay (only if doc has text layer) -->
-                        {#if $docStore.has_text_layer}
-                            <SelectionLayer
-                                docId={$docStore.doc_id}
-                                pageIndex={i}
-                                {size}
-                                zoom={effectiveZoom}
-                            />
-                        {/if}
+                        <canvas class="page-canvas" bind:this={canvasEls[i]}></canvas>
                     {/if}
-                    <div class="page-label">Page {i + 1}</div>
+                    <div class="page-label">{i + 1}</div>
                 </div>
             {/each}
         {:else}
@@ -204,12 +205,6 @@
             </div>
         {/if}
     </div>
-
-    {#if $docStore && !$docStore.has_text_layer}
-        <div class="no-text-banner">
-            This document has no selectable text — highlighting is unavailable.
-        </div>
-    {/if}
 </div>
 
 <style>
@@ -223,18 +218,56 @@
     position: relative;
 }
 
-.zoom-bar {
+.toolbar {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
     padding: 4px 8px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
 
-.zoom-bar button {
-    min-width: 32px;
+.role-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.spacer { flex: 1; }
+
+.page-jump {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.page-box {
+    width: 48px;
+    padding: 2px 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    font-size: 12px;
+    text-align: right;
+}
+
+.page-total {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.zoom-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.toolbar button {
+    min-width: 30px;
     padding: 2px 8px;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -244,10 +277,10 @@
     font-size: 13px;
 }
 
-.zoom-bar button:hover { background: var(--bg-hover); }
+.toolbar button:hover { background: var(--bg-hover); }
 
 .zoom-pct {
-    min-width: 52px;
+    min-width: 50px;
     text-align: center;
     font-variant-numeric: tabular-nums;
 }
@@ -257,13 +290,11 @@
     border-color: var(--accent);
     color: var(--on-accent);
 }
-
 .fit-btn.active:hover { background: var(--accent-hover); }
 
 .page-scroll {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: auto;
+    overflow: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -273,19 +304,16 @@
 
 .page-slot {
     position: relative;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
     border: 1px solid var(--border);
     background: white;
     flex-shrink: 0;
 }
 
-.page-slot img {
+.page-canvas {
     display: block;
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
-    user-select: none;
+    width: 100%;
+    height: 100%;
 }
 
 .page-label {
@@ -305,20 +333,5 @@
     height: 100%;
     color: var(--text-muted);
     font-size: 14px;
-}
-
-.no-text-banner {
-    position: absolute;
-    bottom: 8px;
-    left: 8px;
-    right: 8px;
-    background: #fef3c7;
-    color: #92400e;
-    border: 1px solid #fcd34d;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    text-align: center;
-    pointer-events: none;
 }
 </style>

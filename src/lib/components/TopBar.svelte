@@ -1,81 +1,83 @@
 <script lang="ts">
-    import { document as docStore, notesOpen, highlights } from '../stores.js';
-    import { openDocument, openDocumentDialog, listHighlights } from '../api.js';
+    import { onMount, onDestroy } from 'svelte';
+    import { getCurrentWebview } from '@tauri-apps/api/webview';
+    import { pdfDoc, mainViewer, sideViewer, sideOpen } from '../stores.js';
+    import { openDocumentDialog, readPdf, baseName } from '../api.js';
+    import { loadPdf, getPage } from '../pdf.js';
 
     let loading = $state(false);
     let error = $state<string | null>(null);
+    let dragHover = $state(false);
+
+    async function loadFromPath(path: string) {
+        loading = true;
+        error = null;
+        try {
+            const bytes = await readPdf(path);
+            const proxy = await loadPdf(bytes);
+            const page1 = await getPage(proxy, 1);
+            const vp = page1.getViewport({ scale: 1 });
+            pdfDoc.set({
+                proxy,
+                numPages: proxy.numPages,
+                defaultWidth: vp.width,
+                defaultHeight: vp.height,
+                fileName: baseName(path),
+            });
+            mainViewer.set({ targetPage: 0, mode: 'fit', manualZoom: 1 });
+            sideViewer.set({ targetPage: 0, mode: 'fit', manualZoom: 1 });
+        } catch (e: unknown) {
+            error = (e as { message?: string })?.message ?? String(e);
+        } finally {
+            loading = false;
+        }
+    }
 
     async function handleOpen() {
-        error = null;
         const path = await openDocumentDialog();
-        if (!path) return;
-        loading = true;
-        try {
-            const doc = await openDocument(path);
-            docStore.set(doc);
-            const hl = await listHighlights(doc.doc_id);
-            highlights.set(hl);
-        } catch (e: unknown) {
-            const err = e as { type?: string; message?: string };
-            if (err?.type === 'NeedsPassword') {
-                error = 'This PDF is password-protected.';
-            } else {
-                error = err?.message ?? String(e);
+        if (path) loadFromPath(path);
+    }
+
+    // Tauri intercepts OS file drops at the window level (the webview never sees
+    // an HTML drop), so we listen via the webview drag-drop event for the path.
+    let unlisten: (() => void) | undefined;
+    onMount(async () => {
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+            const p = event.payload;
+            if (p.type === 'enter' || p.type === 'over') {
+                dragHover = true;
+            } else if (p.type === 'leave') {
+                dragHover = false;
+            } else if (p.type === 'drop') {
+                dragHover = false;
+                const pdf = p.paths.find((x) => x.toLowerCase().endsWith('.pdf')) ?? p.paths[0];
+                if (pdf) loadFromPath(pdf);
             }
-        } finally {
-            loading = false;
-        }
-    }
-
-    async function handleDrop(e: DragEvent) {
-        e.preventDefault();
-        const file = e.dataTransfer?.files?.[0];
-        if (!file) return;
-        const path = (file as File & { path?: string }).path;
-        if (!path) return;
-        error = null;
-        loading = true;
-        try {
-            const doc = await openDocument(path);
-            docStore.set(doc);
-            const hl = await listHighlights(doc.doc_id);
-            highlights.set(hl);
-        } catch (e: unknown) {
-            const err = e as { type?: string; message?: string };
-            error = err?.message ?? String(e);
-        } finally {
-            loading = false;
-        }
-    }
-
-    function handleDragover(e: DragEvent) {
-        e.preventDefault();
-    }
+        });
+    });
+    onDestroy(() => unlisten?.());
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<header class="topbar" ondrop={handleDrop} ondragover={handleDragover}>
+<header class="topbar" class:drag-hover={dragHover}>
     <span class="app-name">Argon-PDF</span>
 
-    <button onclick={handleOpen} disabled={loading} class="btn-open">
+    <button onclick={handleOpen} disabled={loading} class="btn">
         {loading ? 'Opening…' : 'Open PDF'}
     </button>
 
-    {#if $docStore}
-        <button
-            onclick={() => notesOpen.update(v => !v)}
-            class="btn-notes"
-            class:active={$notesOpen}
-        >
-            Notes {$notesOpen ? '▶' : '◀'}
+    {#if $pdfDoc}
+        <button onclick={() => sideOpen.update((v) => !v)} class="btn" class:active={$sideOpen}>
+            {$sideOpen ? 'Hide side page' : 'Show side page'}
         </button>
+        <span class="file-name" title={$pdfDoc.fileName}>{$pdfDoc.fileName}</span>
+        <span class="page-count">{$pdfDoc.numPages} pages</span>
     {/if}
 
     {#if error}
         <span class="error-msg">{error}</span>
     {/if}
 
-    <span class="drag-hint">or drop a PDF here</span>
+    <span class="drag-hint">{dragHover ? 'Drop to open' : 'or drop a PDF here'}</span>
 </header>
 
 <style>
@@ -92,13 +94,18 @@
     user-select: none;
 }
 
+.topbar.drag-hover {
+    outline: 2px dashed var(--accent);
+    outline-offset: -4px;
+}
+
 .app-name {
     font-weight: 700;
     letter-spacing: 0.05em;
     color: var(--accent);
 }
 
-.btn-open, .btn-notes {
+.btn {
     padding: 4px 14px;
     border-radius: 6px;
     border: 1px solid var(--border);
@@ -109,14 +116,26 @@
     transition: background 0.15s;
 }
 
-.btn-open:hover, .btn-notes:hover {
-    background: var(--bg-hover);
-}
+.btn:hover { background: var(--bg-hover); }
 
-.btn-notes.active {
+.btn.active {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
+}
+
+.file-name {
+    font-size: 12px;
+    color: var(--text);
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.page-count {
+    font-size: 11px;
+    color: var(--text-muted);
 }
 
 .error-msg {

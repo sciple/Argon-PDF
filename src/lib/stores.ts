@@ -1,11 +1,21 @@
 import { writable } from 'svelte/store';
-import type { DocumentState, Highlight, ViewerState } from './types.js';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { ViewerState } from './types.js';
 
-export const document = writable<DocumentState | null>(null);
+export interface PdfState {
+    proxy: PDFDocumentProxy;
+    numPages: number;
+    /** Page-1 size at scale 1 (PDF points). Used as the layout size for all
+     *  pages — maths textbooks are uniform; mixed-size docs still render each
+     *  page correctly, only the slot box may differ slightly. */
+    defaultWidth: number;
+    defaultHeight: number;
+    fileName: string;
+}
 
-export const centerViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', manualZoom: 1.0 });
-export const rightViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', manualZoom: 1.0 });
+export const pdfDoc = writable<PdfState | null>(null);
 
-export const highlights = writable<Highlight[]>([]);
+export const mainViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', manualZoom: 1.0 });
+export const sideViewer = writable<ViewerState>({ targetPage: 0, mode: 'fit', manualZoom: 1.0 });
 
-export const notesOpen = writable<boolean>(false);
+export const sideOpen = writable<boolean>(true);

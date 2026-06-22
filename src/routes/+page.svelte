@@ -2,10 +2,9 @@
     import TopBar from '$lib/components/TopBar.svelte';
     import ThumbnailStrip from '$lib/components/ThumbnailStrip.svelte';
     import PageViewer from '$lib/components/PageViewer.svelte';
-    import NotesPanel from '$lib/components/NotesPanel.svelte';
-    import { centerViewer, rightViewer, notesOpen } from '$lib/stores.js';
+    import { mainViewer, sideViewer, sideOpen } from '$lib/stores.js';
 
-    // Fraction of the viewer area given to the center panel (rest goes to right).
+    // Fraction of the viewer area given to the main panel (rest goes to side).
     let centerFraction = $state(0.5);
     let viewersEl = $state<HTMLDivElement>();
     let dragging = $state(false);
@@ -62,39 +61,37 @@
         <ThumbnailStrip />
 
         <div class="viewers" class:dragging bind:this={viewersEl}>
-            <div class="viewer-pane" style="flex-grow: {centerFraction}">
-                <PageViewer viewerStore={centerViewer} role="center" />
+            <div class="viewer-pane" style="flex-grow: {$sideOpen ? centerFraction : 1}">
+                <PageViewer viewerStore={mainViewer} label="Main" />
             </div>
 
-            <!-- A focusable, keyboard-operable separator is the ARIA window-splitter pattern -->
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <div
-                class="viewer-divider"
-                role="separator"
-                aria-orientation="vertical"
-                aria-valuenow={Math.round(centerFraction * 100)}
-                aria-valuemin={Math.round(MIN * 100)}
-                aria-valuemax={Math.round(MAX * 100)}
-                tabindex="0"
-                title="Drag to resize the viewers (double-click to reset)"
-                onpointerdown={onDividerPointerDown}
-                onpointermove={onDividerPointerMove}
-                onpointerup={onDividerPointerUp}
-                ondblclick={() => (centerFraction = 0.5)}
-                onkeydown={onDividerKey}
-            >
-                <div class="divider-grip"></div>
-            </div>
+            {#if $sideOpen}
+                <!-- A focusable, keyboard-operable separator is the ARIA window-splitter pattern -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <div
+                    class="viewer-divider"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-valuenow={Math.round(centerFraction * 100)}
+                    aria-valuemin={Math.round(MIN * 100)}
+                    aria-valuemax={Math.round(MAX * 100)}
+                    tabindex="0"
+                    title="Drag to resize the viewers (double-click to reset)"
+                    onpointerdown={onDividerPointerDown}
+                    onpointermove={onDividerPointerMove}
+                    onpointerup={onDividerPointerUp}
+                    ondblclick={() => (centerFraction = 0.5)}
+                    onkeydown={onDividerKey}
+                >
+                    <div class="divider-grip"></div>
+                </div>
 
-            <div class="viewer-pane" style="flex-grow: {1 - centerFraction}">
-                <PageViewer viewerStore={rightViewer} role="right" />
-            </div>
+                <div class="viewer-pane" style="flex-grow: {1 - centerFraction}">
+                    <PageViewer viewerStore={sideViewer} label="Side" />
+                </div>
+            {/if}
         </div>
-
-        {#if $notesOpen}
-            <NotesPanel />
-        {/if}
     </div>
 </div>
 

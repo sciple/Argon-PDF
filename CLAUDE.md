@@ -4,79 +4,88 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Argon-PDF is a Windows 11 native PDF reader built with **Rust + Tauri**. Its defining feature is a dual-page viewer: two independent page viewers for the same PDF can be open simultaneously.
+Argon-PDF is a Windows 11 native PDF reader built with **Rust + Tauri**, focused on one
+workflow: reading a document in a **main viewer** while checking another page of the same
+document **side-by-side** (e.g. working a maths exercise while viewing its solution).
 
-Core capabilities from [Docs/specs.md](Docs/specs.md):
-- Left panel: scrollable page thumbnail strip; clicking a thumbnail focuses it in a viewer
-- Center panel: primary page viewer with zoom in/out
-- Right panel: secondary independent page viewer (its own scroll position, independent of center)
-- Text highlighting that persists permanently per-document
-- Notes panel: lists all highlights; clicking a note navigates to that page
-- Users can delete highlights
+Core UX:
+- Left: scrollable page **thumbnail strip**; hovering a thumbnail reveals **Main / Side** buttons
+  that open that page in the chosen viewer.
+- **Main viewer** and **Side viewer**: two independent continuous-scroll page viewers, each with
+  its own page position, fit-width/zoom, and a **page-number box** to jump to a page.
+- A **draggable divider** resizes main vs side; the side viewer can be toggled on/off.
+
+Rendering quality is a hard requirement: pages must be **crisp like Firefox/Adobe**.
 
 ## Tech Stack
 
-- **Backend**: Rust (PDF parsing, highlight storage, file I/O)
-- **Frontend**: Svelte 5 + Vite + TypeScript
-- **PDF rendering**: `pdfium-render` (PDFium). Chosen over `pdf-rs` because text-snapped highlighting needs reliable per-glyph text bounding boxes, which PDFium provides. Note: PDFium is a native dynamic library that must be bundled with the app (see Build notes).
-- **Persistence**: single SQLite database in `%APPDATA%` via `rusqlite`. Not per-file JSON sidecars.
+- **Frontend**: Svelte 5 + SvelteKit (SPA, `adapter-static`) + Vite + TypeScript. Owns all
+  PDF handling.
+- **PDF rendering**: **PDF.js (`pdfjs-dist`)** — the engine inside Firefox — rendered to
+  `<canvas>` at `devicePixelRatio` and re-rendered on zoom. This is crisp by construction.
+  **Do NOT** pre-render pages to images in Rust and display them in `<img>`; that approach is
+  persistently blurry at fractional Windows display scaling (this was the original design and
+  was removed for that reason).
+- **Backend (Rust/Tauri)**: minimal. Its only job is reading a chosen file's bytes
+  (`read_pdf` command) and the native file-open dialog. No PDFium, no database.
 
 ## Common Commands
 
 ```bash
-# Development
-cargo tauri dev
+# Development (run the app)
+npm run tauri dev
 
-# Production build
-cargo tauri build
+# Production build (installer)
+npm run tauri build
 
-# Run Rust unit tests
-cargo test
+# Frontend type-check (Svelte + TS)
+npm run check
 
-# Run a single test
-cargo test <test_name>
-
-# Lint
+# Rust checks
+cargo build            # from src-tauri/ (or: cargo check)
 cargo clippy -- -D warnings
-
-# Format
 cargo fmt --check
-
-# Frontend tests
-npm run test
-
-# Frontend dev (without Tauri)
-npm run dev
 ```
 
-### Build notes
-`pdfium-render` links against the PDFium native library (`pdfium.dll` on Windows), which is **not** vendored by Cargo. The DLL must be available at dev/runtime and bundled into the Tauri installer (via `tauri.conf.json` resources / `externalBin`). A missing or ABI-mismatched `pdfium.dll` is the most likely first-run failure — confirm it loads before debugging anything else.
-
-## Architecture Intent
+## Architecture
 
 ### Process boundary
-Tauri splits work across two processes:
-- **Rust core** (`src-tauri/`): PDF page rendering, highlight CRUD, file management. Exposed to the frontend via Tauri commands (`#[tauri::command]`).
-- **Webview frontend** (`src/`): Three-panel layout, zoom controls, highlight overlay, notes UI. Communicates with Rust via `invoke()`.
+- **Rust core** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs)): one command,
+  `read_pdf(path) -> tauri::ipc::Response`, returning raw file bytes as an ArrayBuffer
+  (efficient — not a JSON number array). Registers the dialog plugin. That's it.
+- **Webview frontend** (`src/`): loads the bytes into PDF.js, renders pages to canvases, and
+  implements the whole UI.
 
-### Dual-viewer design
-Each viewer is an independent component with its own current-page state. The thumbnail strip is a shared source of truth for page count/order but does not own viewer scroll state.
+### Frontend layout
+- [src/lib/pdf.ts](src/lib/pdf.ts): PDF.js worker setup (`workerSrc` from a Vite `?url` import),
+  `loadPdf(bytes)`, a shared per-document page cache `getPage()`, and `renderPageToCanvas()`
+  (device-pixel-exact, cancels superseded renders).
+- [src/lib/stores.ts](src/lib/stores.ts): `pdfDoc` (the shared `PDFDocumentProxy` + page size +
+  count), `mainViewer` / `sideViewer` (`{ targetPage, mode: 'fit'|'manual', manualZoom }`),
+  and `sideOpen`.
+- [src/lib/components/PageViewer.svelte](src/lib/components/PageViewer.svelte): reusable
+  virtualized continuous-scroll viewer (IntersectionObserver renders only near-viewport pages);
+  fit-width by default via a `ResizeObserver` on the pane, manual zoom on +/−, page-number box.
+  Used for **both** main and side.
+- `ThumbnailStrip.svelte` / `Thumbnail.svelte`: virtualized thumbnail canvases + hover Main/Side.
+- [src/routes/+page.svelte](src/routes/+page.svelte): three-pane layout + the draggable divider
+  (ARIA `separator`, pointer-capture drag, keyboard-resizable).
 
-### Highlight model
-Highlighting is **text-snapped**: the user selects text from the PDF's text layer (via PDFium text extraction), not free-form boxes. A single highlight is a *list* of rectangles (a multi-line selection spans several rects) plus a page number — model it as a list, not one box. Rectangles are stored in **PDF-coordinate space on the unrotated page** (not pixels) so they survive zoom changes, window resizes, and DPI changes.
+### Rendering rules (the crisp part)
+Canvas backing store = `viewport(scale) × devicePixelRatio`; canvas CSS box = logical px. Fit-width
+computes `scale` from the measured pane width. During a divider drag the canvas is CSS-scaled live
+and the backing store is re-rendered after a short debounce (crisp on settle). See
+[[rendering-must-be-pdfjs-not-raster]] in project memory.
 
-If a PDF has no selectable text (e.g. a scanned/image-only document), highlighting is **disabled** and the UI shows a message; viewing/scrolling/zoom/dual-viewer still work. OCR is out of scope.
+## Notes / gotchas
+- **PDF.js worker**: imported via `pdfjs-dist/build/pdf.worker.min.mjs?url` and assigned to
+  `GlobalWorkerOptions.workerSrc`. CSP in [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json)
+  must allow `worker-src 'self' blob:`.
+- **Drag-and-drop**: Tauri intercepts OS file drops at the window level, so the path comes from
+  `getCurrentWebview().onDragDropEvent(...)` (the webview never gets an HTML drop event).
+- **Mixed page sizes**: layout uses page 1's size for all slots (maths textbooks are uniform).
+  Each page still renders at its own true viewport; only the slot box may differ on odd pages.
 
-### Persistence model
-Highlights live in one SQLite DB in `%APPDATA%`. Documents are keyed by **content hash** (with last-known file path stored as a hint) so highlights survive moving/renaming the PDF. Writes are transactional so a crash mid-write cannot corrupt the store.
-
-## Test Strategy
-
-Per the spec, a test strategy is required to allow fearless feature addition/removal without regression risk. Planned layers:
-
-1. **Rust unit tests** — pure functions: PDF page count, highlight serialization/deserialization, coordinate math.
-2. **Tauri command integration tests** — test each `#[tauri::command]` handler in isolation using Tauri's test utilities.
-3. **UI component tests** — test viewer and panel components independently (Vitest + @testing-library/svelte).
-4. **End-to-end tests** — Playwright via tauri-driver; cover: open PDF → navigate pages → add highlight → reopen → verify highlight persists → delete highlight.
-
-Regression gate: CI must pass all four layers before merging any feature branch.
+## Out of scope (intentionally removed)
+Text highlighting, a notes panel, and persistence (SQLite) were dropped to keep the app lean and
+fast. Don't reintroduce them — or a server-side raster pipeline — unless explicitly asked.

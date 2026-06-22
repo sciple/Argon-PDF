@@ -1,62 +1,62 @@
 <script lang="ts">
-    import { document as docStore, centerViewer, rightViewer } from '../stores.js';
-    import { renderUrl } from '../api.js';
-    import type { PageSize } from '../types.js';
+    import { pdfDoc, mainViewer, sideViewer, sideOpen } from '../stores.js';
+    import { getPage, renderPageToCanvas } from '../pdf.js';
 
     interface Props {
         pageIndex: number;
-        size: PageSize;
         visible: boolean;
     }
-    let { pageIndex, size, visible }: Props = $props();
+    let { pageIndex, visible }: Props = $props();
 
-    // Thumbnail scale: ~150px wide
-    const THUMB_WIDTH_PX = 150;
-    // Render the thumbnail at devicePixelRatio so it isn't blurry on HiDPI screens.
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const scale = $derived(
-        $docStore ? Math.round((THUMB_WIDTH_PX / ((size.width_pts / 72) * 96)) * dpr * 100) : 20
-    );
-    const thumbH = $derived(
-        Math.round((size.height_pts / size.width_pts) * THUMB_WIDTH_PX)
-    );
+    const THUMB_WIDTH = 150;
 
-    function sendToCenter() {
-        centerViewer.update(v => ({ ...v, targetPage: pageIndex }));
-    }
-
-    function sendToRight() {
-        rightViewer.update(v => ({ ...v, targetPage: pageIndex }));
-    }
-
+    let canvas = $state<HTMLCanvasElement>();
     let hovered = $state(false);
+    let rendered = false;
+
+    const thumbHeight = $derived(
+        $pdfDoc ? ($pdfDoc.defaultHeight / $pdfDoc.defaultWidth) * THUMB_WIDTH : THUMB_WIDTH * 1.3
+    );
+
+    $effect(() => {
+        const doc = $pdfDoc;
+        const cv = canvas;
+        if (!doc || !visible || !cv || rendered) return;
+        rendered = true;
+        const scale = THUMB_WIDTH / doc.defaultWidth;
+        getPage(doc.proxy, pageIndex + 1)
+            .then((pg) => renderPageToCanvas(pg, cv, scale))
+            .catch(() => { rendered = false; });
+    });
+
+    function toMain() {
+        mainViewer.update((v) => ({ ...v, targetPage: pageIndex }));
+    }
+    function toSide() {
+        sideOpen.set(true);
+        sideViewer.update((v) => ({ ...v, targetPage: pageIndex }));
+    }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
     class="thumb-wrap"
+    style="width: {THUMB_WIDTH}px; height: {thumbHeight}px;"
     onmouseenter={() => (hovered = true)}
     onmouseleave={() => (hovered = false)}
-    style="width: {THUMB_WIDTH_PX}px; height: {thumbH}px;"
 >
-    {#if visible && $docStore}
-        <img
-            src={renderUrl($docStore.doc_id, pageIndex, scale)}
-            alt="Page {pageIndex + 1}"
-            width={THUMB_WIDTH_PX}
-            height={thumbH}
-            draggable="false"
-        />
+    {#if visible && $pdfDoc}
+        <canvas class="thumb-canvas" bind:this={canvas}></canvas>
     {:else}
-        <div class="thumb-placeholder" style="height: {thumbH}px;"></div>
+        <div class="thumb-placeholder"></div>
     {/if}
 
     <span class="page-num">{pageIndex + 1}</span>
 
     {#if hovered}
         <div class="hover-buttons">
-            <button onclick={sendToCenter} title="Show in center viewer">Center</button>
-            <button onclick={sendToRight} title="Show in right viewer">Right</button>
+            <button onclick={toMain} title="Show in main viewer">Main</button>
+            <button onclick={toSide} title="Show in side viewer">Side</button>
         </div>
     {/if}
 </div>
@@ -72,19 +72,15 @@
     overflow: visible;
 }
 
-.thumb-wrap img {
+.thumb-canvas,
+.thumb-placeholder {
     display: block;
     width: 100%;
     height: 100%;
-    object-fit: cover;
     border-radius: 3px;
 }
 
-.thumb-placeholder {
-    width: 100%;
-    background: var(--bg-hover);
-    border-radius: 3px;
-}
+.thumb-placeholder { background: var(--bg-hover); }
 
 .page-num {
     position: absolute;
@@ -110,7 +106,7 @@
 }
 
 .hover-buttons button {
-    width: 80%;
+    width: 70%;
     padding: 4px 0;
     background: var(--accent);
     border: none;
