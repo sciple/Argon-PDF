@@ -1,6 +1,7 @@
 <script lang="ts">
     import { pdfDoc, mainViewer, sideViewer, sideOpen } from '../stores.js';
     import { getPage, renderPageToCanvas } from '../pdf.js';
+    import Icon from './Icon.svelte';
 
     interface Props {
         pageIndex: number;
@@ -55,8 +56,12 @@
 
     {#if hovered}
         <div class="hover-buttons">
-            <button onclick={toMain} title="Show in main viewer">Main</button>
-            <button onclick={toSide} title="Show in side viewer">Side</button>
+            <button onclick={toMain} title="Show in main viewer" aria-label="Show in main viewer">
+                <Icon name="panel-left" size={20} />
+            </button>
+            <button onclick={toSide} title="Show in side viewer" aria-label="Show in side viewer">
+                <Icon name="panel-right" size={20} />
+            </button>
         </div>
     {/if}
 </div>
@@ -97,24 +102,23 @@
     position: absolute;
     inset: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 10px;
     background: rgba(255, 255, 255, 0.78);
     border-radius: 3px;
 }
 
 .hover-buttons button {
-    width: 70%;
-    padding: 4px 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
     background: var(--accent);
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     color: var(--on-accent);
-    font-size: 12px;
     cursor: pointer;
-    font-weight: 600;
 }
 
 .hover-buttons button:hover { background: var(--accent-hover); }

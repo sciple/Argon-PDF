@@ -2,6 +2,7 @@
     import { untrack } from 'svelte';
     import { pdfDoc } from '../stores.js';
     import { getPage, renderPageToCanvas } from '../pdf.js';
+    import Icon from './Icon.svelte';
     import type { ViewerState } from '../types.js';
     import type { Writable } from 'svelte/store';
 
@@ -204,10 +205,16 @@
             </label>
 
             <div class="zoom-group">
-                <button onclick={zoomOut} title="Zoom out">−</button>
+                <button class="icon-btn" onclick={zoomOut} title="Zoom out" aria-label="Zoom out">
+                    <Icon name="zoom-out" />
+                </button>
                 <button class="zoom-pct" onclick={fitWidth} title="Fit width">{Math.round(displayScale * 100)}%</button>
-                <button onclick={zoomIn} title="Zoom in">+</button>
-                <button class="fit-btn" class:active={mode === 'fit'} onclick={fitWidth} title="Fit page width">Fit</button>
+                <button class="icon-btn" onclick={zoomIn} title="Zoom in" aria-label="Zoom in">
+                    <Icon name="zoom-in" />
+                </button>
+                <button class="icon-btn fit-btn" class:active={mode === 'fit'} onclick={fitWidth} title="Fit page width" aria-label="Fit page width" aria-pressed={mode === 'fit'}>
+                    <Icon name="fit-width" />
+                </button>
             </div>
         {/if}
     </div>
@@ -308,6 +315,14 @@
 }
 
 .toolbar button:hover { background: var(--bg-hover); }
+
+.toolbar .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    padding: 4px;
+}
 
 .zoom-pct {
     min-width: 50px;
